@@ -1,0 +1,15 @@
+{
+  "name": "studyPartner",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Study Partner Application",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "cd 15nov && npm ci && npm run build",
+    "start": "cd 15nov && npm start"
+  }
+}
+

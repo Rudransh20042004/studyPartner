@@ -1,12 +1,3 @@
-[providers]
-node = "20"
-
-[phases.install]
-cmds = ["cd 15nov && npm ci"]
-
-[phases.build]
-cmds = ["cd 15nov && npm run build"]
-
 [start]
-cmd = "cd 15nov && npm start"
+cmd = "npm start"
 
