@@ -295,8 +295,19 @@ export async function deleteMessageFileSupabase(message) {
   const idx = message.image_url.indexOf(marker);
   if (idx === -1) throw new Error('Unrecognized storage URL');
   const path = message.image_url.substring(idx + marker.length);
-  const { error } = await supabase.storage.from(CHAT_BUCKET).remove([path]);
-  if (error) throw error;
+  const { error: storageErr } = await supabase.storage.from(CHAT_BUCKET).remove([path]);
+  if (storageErr) throw storageErr;
+  // Also clear the reference in the DB so realtime listeners see the change
+  const { error: dbErr } = await supabase
+    .from('messages')
+    .update({
+      image_url: null,
+      text: message.text && message.text.trim()
+        ? `${message.text} (deleted)`
+        : 'File (deleted)',
+    })
+    .eq('id', message.id);
+  if (dbErr) throw dbErr;
 }
 
 

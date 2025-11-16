@@ -38,7 +38,7 @@ export default function ReactionsDock({ groupCode }) {
 	};
 
 	return (
-		<div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/70 backdrop-blur border border-white/40 shadow-sm">
+		<div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/70 backdrop-blur border border-white/40 shadow-sm">
 			{EMOJIS.map(e => (
 				<button
 					key={e}

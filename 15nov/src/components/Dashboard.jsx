@@ -1,7 +1,7 @@
 
 
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { LogOut, Edit2, Check, X, MessageSquare, Database } from 'lucide-react';
+import { LogOut, Edit2, Check, X, MessageSquare, Database, Menu } from 'lucide-react';
 import { initCrossTabSync } from '../utils/crossTabSync';
 import { supabase } from '../lib/supabaseClient';
 import { getRecentSessionsSupabase, getMyActiveSessionSupabase, updateHeartbeatSupabase, updateSessionSupabase, leaveSessionSupabase, sendMessageSupabase, listInboxSupabase, markMessageReadSupabase, listConversationSupabase, subscribeConversationSupabase, sendImageMessageSupabase, sendPdfMessageSupabase, deleteMessageFileSupabase, markConversationReadSupabase } from '../utils/sessionsSupabase';
@@ -66,6 +66,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMsg, setProfileMsg] = useState('');
   const [headerStudentId, setHeaderStudentId] = useState(user?.studentId || '');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   useEffect(() => {
     setHeaderStudentId(user?.studentId || '');
@@ -394,12 +395,12 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
 
   const filteredSessions = useMemo(() => {
     return allSessions.filter(session => {
-      if (session.id === mySession?.id) return false;
-      if (filter === 'all') return true;
-      if (filter === 'myCourse') return session.courseCode === mySession?.courseCode;
-      const dept = filter.toUpperCase();
-      return session.courseCode.startsWith(dept);
-    });
+    if (session.id === mySession?.id) return false;
+    if (filter === 'all') return true;
+    if (filter === 'myCourse') return session.courseCode === mySession?.courseCode;
+    const dept = filter.toUpperCase();
+    return session.courseCode.startsWith(dept);
+  });
   }, [allSessions, mySession?.id, mySession?.courseCode, filter]);
   
   // Debug: Log what we're seeing
@@ -470,78 +471,166 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
       {!perfMode && <BackgroundBlobs />}
       {!perfMode && <FloatingIconOrbit />}
       {!perfMode && <RippleAmbient />}
-
+      
       {/* Top Bar */}
-      <div className="bg-white border-b border-gray-200 px-4 py-4">
+      <div className="bg-white border-b border-gray-200 px-4 py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0 shrink-0">
             <img src="/dashboard.png" alt="myPeers" className="h-8 shrink-0" onError={(e)=>{ e.currentTarget.style.display='none'; }} />
           </div>
-          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap flex-1 ml-4 pr-2">
+
+          {/* Desktop actions - Group, Reactions, Board (hidden on mobile, shown in hamburger menu instead) */}
+          <div className="hidden md:flex items-center gap-2 flex-1 ml-4 min-w-0 overflow-x-auto">
             <GroupDock userId={mySession.userId} userName={mySession.name} />
             <ReactionsDock groupCode={groupCode} />
             <WhiteboardDock groupCode={groupCode} />
             <button
               onClick={togglePerfMode}
-              className={`text-xs px-2.5 py-1 rounded-full border ${perfMode ? 'bg-gray-100 border-gray-300' : 'bg-white/70 border-white/40 hover:bg-white'}`}
+              className={`text-xs px-2.5 py-1 rounded-full border shrink-0 ${perfMode ? 'bg-gray-100 border-gray-300' : 'bg-white/70 border-white/40 hover:bg-white'}`}
               title="Toggle Performance Mode"
             >
               {perfMode ? 'Performance: On' : 'Performance: Off'}
             </button>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          
+          {/* Messages, Profile, Actions (desktop only) */}
+          <div className="hidden md:flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
+              <AnimatedButton
+                onClick={async () => {
+                  await checkMessages(); // Refresh messages before opening
+                  setShowInbox(true);
+                }}
+                className="relative flex items-center gap-2 px-5 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-all duration-200 text-base font-medium"
+              >
+                <MessageSquare className="w-5 h-5" />
+                {unreadMessages > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center unread-glow">
+                    {unreadMessages}
+                  </span>
+                )}
+                <span className="hidden md:inline">Messages</span>
+              </AnimatedButton>
+              <div className="flex items-center gap-2">
+                {user && (
+                  <AnimatedButton
+                    type="button"
+                    onClick={() => {
+                      setShowProfileModal(true);
+                      setProfileStudentId(user.studentId || '');
+                      setProfilePassword('');
+                      setProfileMsg('');
+                    }}
+                    className="text-left text-base text-gray-600 mr-2 hover:underline"
+                    title="Open profile"
+                  >
+                    <span className="font-semibold text-gray-800">{user.name}</span>
+                    <span className="text-gray-400 mx-1">•</span>
+                    <span className="font-mono text-sm">{headerStudentId || user.studentId}</span>
+                  </AnimatedButton>
+                )}
+                <AnimatedButton
+                  onClick={handleLeave}
+                  className="flex items-center gap-2 px-4 py-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-all duration-200 font-medium"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Leave Session
+                </AnimatedButton>
+                {onLogout && (
+                  <AnimatedButton
+                    onClick={onLogout}
+                    className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200 font-medium"
+                  >
+                    Logout
+                  </AnimatedButton>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Mobile - Messages and Menu */}
+          <div className="flex items-center gap-2 md:hidden shrink-0">
             <AnimatedButton
               onClick={async () => {
-                await checkMessages(); // Refresh messages before opening
+                await checkMessages();
                 setShowInbox(true);
               }}
-              className="relative flex items-center gap-2 px-5 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-all duration-200 text-base font-medium"
+              className="relative flex items-center justify-center w-9 h-9 rounded-full bg-gray-50"
             >
-              <MessageSquare className="w-5 h-5" />
+              <MessageSquare className="w-5 h-5 text-gray-700" />
               {unreadMessages > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center unread-glow">
+                <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center">
                   {unreadMessages}
                 </span>
               )}
-              <span className="hidden md:inline">Messages</span>
             </AnimatedButton>
-            <div className="flex items-center gap-2">
+            <AnimatedButton
+              onClick={() => setMobileMenuOpen((v) => !v)}
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-gray-50"
+            >
+              <Menu className="w-5 h-5 text-gray-800" />
+            </AnimatedButton>
+          </div>
+        </div>
+      </div>
+
+      {/* Mobile menu sheet */}
+      {mobileMenuOpen && (
+        <div className="md:hidden bg-white border-b border-gray-200 px-4 py-3">
+          <div className="max-w-7xl mx-auto space-y-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <GroupDock userId={mySession.userId} userName={mySession.name} />
+              <ReactionsDock groupCode={groupCode} />
+              <WhiteboardDock groupCode={groupCode} />
+              <button
+                onClick={togglePerfMode}
+                className={`text-[11px] px-2 py-1 rounded-full border ${perfMode ? 'bg-gray-100 border-gray-300' : 'bg-white/70 border-white/40 hover:bg-white'}`}
+                title="Toggle Performance Mode"
+              >
+                {perfMode ? 'Performance: On' : 'Performance: Off'}
+              </button>
+            </div>
+            <div className="flex flex-col gap-2 pt-1 border-t border-gray-100 mt-2">
               {user && (
-                <AnimatedButton
+                <button
                   type="button"
                   onClick={() => {
                     setShowProfileModal(true);
                     setProfileStudentId(user.studentId || '');
                     setProfilePassword('');
                     setProfileMsg('');
+                    setMobileMenuOpen(false);
                   }}
-                  className="text-left text-base text-gray-600 mr-2 hover:underline"
-                  title="Open profile"
+                  className="flex items-center justify-between text-xs text-gray-700"
                 >
-                  <span className="font-semibold text-gray-800">{user.name}</span>
-                  <span className="text-gray-400 mx-1">•</span>
-                  <span className="font-mono text-sm">{headerStudentId || user.studentId}</span>
-                </AnimatedButton>
+                  <span className="font-semibold">{user.name}</span>
+                  <span className="font-mono">{headerStudentId || user.studentId}</span>
+                </button>
               )}
-              <AnimatedButton
-                onClick={handleLeave}
-                className="flex items-center gap-2 px-4 py-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-all duration-200 font-medium"
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  handleLeave();
+                }}
+                className="text-xs text-orange-600 text-left"
               >
-                <LogOut className="w-4 h-4" />
                 Leave Session
-              </AnimatedButton>
+              </button>
               {onLogout && (
-                <AnimatedButton
-                  onClick={onLogout}
-                  className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200 font-medium"
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onLogout();
+                  }}
+                  className="text-xs text-red-600 text-left"
                 >
                   Logout
-                </AnimatedButton>
+                </button>
               )}
             </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
@@ -564,7 +653,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                     Edit
                   </AnimatedButton>
                 )}
-                </div>
+              </div>
 
               {isEditing ? (
                 <div className="space-y-4">
@@ -628,7 +717,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                     </div>
                   </div>
 
-                    <div className="flex gap-3">
+                  <div className="flex gap-3">
                     <AnimatedButton
                       onClick={handleSaveEdit}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all"
@@ -697,7 +786,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   </div>
                 </div>
               )}
-              </div>
+            </div>
             </TiltWrapper>
 
             {/* Filter and Sessions Feed */}
@@ -900,19 +989,25 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
             <div className="flex flex-wrap gap-2 items-center justify-between bg-gradient-to-br from-white/96 to-white/80 backdrop-blur-md rounded-xl p-3 shadow border border-white/40" style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 10px 30px rgba(0,0,0,0.06)' }}>
               <TypingDots />
               <input
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (message.trim()) sendMessage();
+                  }
+                }}
                 placeholder="Type a message"
-                className="flex-1 min-w-[180px] border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
+                className="flex-1 min-w-[160px] border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
               <AnimatedButton
                 onClick={sendMessage}
                 disabled={!message.trim()}
-                className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
+                className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap order-3 sm:order-none"
               >
                 Send
               </AnimatedButton>
-              <label className="px-3 py-2 border rounded cursor-pointer hover:bg-gray-50">
+              <label className="px-3 py-2 border rounded cursor-pointer hover:bg-gray-50 order-2 sm:order-none">
                 Attach
                 <input
                   type="file"

@@ -47,7 +47,7 @@ export default function GroupDock({ userId, userName }) {
 	};
 
 	return (
-		<div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/70 backdrop-blur border border-white/40 shadow-sm">
+		<div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/70 backdrop-blur border border-white/40 shadow-sm">
 			{!joined ? (
 				<>
 					<button onClick={createCode} className="text-xs px-2 py-0.5 rounded bg-gray-100 hover:bg-gray-200" title="Generate code">New</button>

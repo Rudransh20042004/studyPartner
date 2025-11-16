@@ -26,14 +26,20 @@ export default function Whiteboard({ groupCode, open, onClose }) {
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.scale(dpr, dpr);
     };
     resize();
+    // Run a second resize shortly after open so the canvas matches the final modal size
+    const timer = setTimeout(resize, 80);
     window.addEventListener('resize', resize);
-    return () => window.removeEventListener('resize', resize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', resize);
+    };
   }, [open]);
 
   // Realtime channel
