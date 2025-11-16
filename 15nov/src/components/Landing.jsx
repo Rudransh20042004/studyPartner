@@ -33,10 +33,15 @@ const Landing = ({ onStartStudying, user, onLogout }) => {
           setProfileComplete(true);
         } else {
           // Prefill name from metadata/email if available
-          const fallbackName =
+          const raw =
             authUser.user_metadata?.full_name ||
             authUser.email?.split('@')?.[0]?.replace(/[._]/g, ' ') ||
             '';
+          const fallbackName = raw
+            .trim()
+            .split(/\s+/)
+            .map(w => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ''))
+            .join(' ');
           setProfileName(fallbackName);
           setProfileComplete(false);
         }
@@ -186,6 +191,16 @@ const Landing = ({ onStartStudying, user, onLogout }) => {
                   if (!authUser) throw new Error('Please login first');
                   if (!profileName.trim() || profileStudentId.trim().length !== 9) {
                     throw new Error('Enter full name and a 9‑digit Student ID');
+                  }
+                  // Uniqueness check
+                  const { data: conflict } = await supabase
+                    .from('profiles')
+                    .select('user_id')
+                    .eq('student_id', profileStudentId.trim())
+                    .neq('user_id', authUser.id)
+                    .maybeSingle();
+                  if (conflict) {
+                    throw new Error('This Student ID is already in use by another account.');
                   }
                   await supabase.from('profiles').upsert({
                     user_id: authUser.id,

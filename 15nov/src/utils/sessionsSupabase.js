@@ -44,11 +44,15 @@ export async function getRecentSessionsSupabase() {
 export async function leaveSessionSupabase() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
-  // Hard delete user's sessions (requires delete policy)
-  const { error } = await supabase
-    .from('sessions')
-    .delete()
-    .eq('user_id', user.id);
+  // First mark inactive so it disappears immediately from active views
+  try {
+    await supabase
+      .from('sessions')
+      .update({ status: 'inactive', last_active: new Date().toISOString() })
+      .eq('user_id', user.id);
+  } catch {}
+  // Then hard delete user's sessions (requires delete policy)
+  const { error } = await supabase.from('sessions').delete().eq('user_id', user.id);
   if (error) throw error;
 }
 

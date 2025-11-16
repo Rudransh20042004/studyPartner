@@ -7,6 +7,19 @@ create table if not exists public.profiles (
   created_at timestamptz default now()
 );
 
+-- Ensure each student_id is unique when provided (allow NULLs)
+do $$
+begin
+  if not exists (
+    select 1 from pg_indexes 
+    where schemaname = 'public' and indexname = 'uniq_profiles_student_id_nonnull'
+  ) then
+    create unique index uniq_profiles_student_id_nonnull
+      on public.profiles ((lower(student_id)))
+      where student_id is not null and length(trim(student_id)) > 0;
+  end if;
+end$$;
+
 -- Sessions table for active sessions (syncing info)
 create table if not exists public.sessions (
   id uuid primary key default gen_random_uuid(),
@@ -103,3 +116,19 @@ drop policy if exists "Allow authenticated users to delete own sessions" on publ
 create policy "Allow authenticated users to delete own sessions" on public.sessions
   for delete using (auth.uid() = user_id);
 
+-- Ensure tables are part of the realtime publication
+do $$
+begin
+  perform 1
+  from pg_publication_tables
+  where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'sessions';
+  if not found then
+    alter publication supabase_realtime add table public.sessions;
+  end if;
+  perform 1
+  from pg_publication_tables
+  where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'messages';
+  if not found then
+    alter publication supabase_realtime add table public.messages;
+  end if;
+end$$;

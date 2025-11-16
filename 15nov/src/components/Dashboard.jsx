@@ -30,6 +30,17 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   const [debugInfo, setDebugInfo] = useState({});
   const [showDebug, setShowDebug] = useState(false);
   const [showDatabase, setShowDatabase] = useState(false);
+  // Profile modal state
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileStudentId, setProfileStudentId] = useState('');
+  const [profilePassword, setProfilePassword] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMsg, setProfileMsg] = useState('');
+  const [headerStudentId, setHeaderStudentId] = useState(user?.studentId || '');
+
+  useEffect(() => {
+    setHeaderStudentId(user?.studentId || '');
+  }, [user?.studentId]);
 
   // Fetch all sessions EXCEPT your own (Supabase)
   const fetchSessions = async () => {
@@ -270,6 +281,46 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showMessageModal, selectedUser?.id, selectedUser?.userId]);
 
+  // Realtime updates for inbox/unread badge and open chats
+  useEffect(() => {
+    if (!mySession?.userId) return;
+    const channel = supabase
+      .channel('messages-inbox-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        async (payload) => {
+          const m = payload.new;
+          if (!m) return;
+          const me = mySession.userId;
+          // Only react if the message involves me
+          if (m.to_user === me || m.from_user === me) {
+            try {
+              // Update unread badge
+              await checkMessages();
+              // If chat with this user is open, refresh thread
+              const otherId = m.from_user === me ? m.to_user : m.from_user;
+              if (showMessageModal && (selectedUser?.userId === otherId || selectedUser?.id === otherId)) {
+                const latest = await listConversationSupabase(otherId);
+                setConversation(latest);
+                // Mark read if it was sent to me and this convo is open
+                if (m.to_user === me) {
+                  await markConversationReadSupabase(otherId);
+                  await checkMessages();
+                }
+              }
+    } catch (e) {
+              console.error('Realtime inbox refresh failed:', e);
+            }
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      try { supabase.removeChannel(channel); } catch {}
+    };
+  }, [mySession?.userId, showMessageModal, selectedUser?.userId, selectedUser?.id]);
+
   const filteredSessions = allSessions.filter(session => {
     // Always exclude own session from filtered list (it's shown separately)
     if (session.id === mySession?.id) return false;
@@ -371,11 +422,21 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
             </button>
             <div className="flex items-center gap-2">
               {user && (
-                <div className="text-base text-gray-600 mr-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowProfileModal(true);
+                    setProfileStudentId(user.studentId || '');
+                    setProfilePassword('');
+                    setProfileMsg('');
+                  }}
+                  className="text-left text-base text-gray-600 mr-2 hover:underline"
+                  title="Open profile"
+                >
                   <span className="font-semibold text-gray-800">{user.name}</span>
                   <span className="text-gray-400 mx-1">•</span>
-                  <span className="font-mono text-sm">{user.studentId}</span>
-                </div>
+                  <span className="font-mono text-sm">{headerStudentId || user.studentId}</span>
+                </button>
               )}
               <button
                 onClick={handleLeave}
@@ -701,8 +762,8 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                           >
                             Delete
                           </button>
-                        )}
-                      </div>
+              )}
+            </div>
             </div>
                   </div>
                 ))
@@ -841,15 +902,103 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                       >
                         <span className="font-medium">{info.name || 'Student'}</span>
                         {info.unread > 0 && (
-                          <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
+                            <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
                             {info.unread}
-                          </span>
-                        )}
+                            </span>
+                          )}
                         </button>
                     ))}
-                      </div>
+                        </div>
                 );
               })()}
+                      </div>
+                    </div>
+                    </div>
+      )}
+
+      {/* Profile Modal */}
+      {showProfileModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold">Your Profile</h3>
+              <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-gray-700">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Student ID (unique, 9 digits)</label>
+                <input
+                  value={profileStudentId}
+                  onChange={(e) => setProfileStudentId(e.target.value.replace(/\D/g, '').slice(0, 9))}
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"
+                  placeholder="260123456"
+                  maxLength={9}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Password (optional)</label>
+                <input
+                  type="password"
+                  value={profilePassword}
+                  onChange={(e) => setProfilePassword(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="••••••••"
+                />
+              </div>
+              {profileMsg && (
+                <div className="text-sm">{profileMsg}</div>
+              )}
+              <div className="flex items-center justify-end gap-2">
+                        <button
+                  onClick={() => setShowProfileModal(false)}
+                  className="px-3 py-2 border rounded-lg hover:bg-gray-50"
+                >
+                  Close
+                </button>
+                <button
+                  disabled={profileSaving}
+                  onClick={async () => {
+                    setProfileSaving(true);
+                    setProfileMsg('');
+                    try {
+                      const { data: { user: authUser } } = await supabase.auth.getUser();
+                      if (!authUser) throw new Error('Please login again');
+                      // Update student ID if changed
+                      if (profileStudentId && profileStudentId !== (user?.studentId || '')) {
+                        // Uniqueness check
+                        const { data: conflict } = await supabase
+                          .from('profiles')
+                          .select('user_id')
+                          .eq('student_id', profileStudentId)
+                          .neq('user_id', authUser.id)
+                          .maybeSingle();
+                        if (conflict) throw new Error('This Student ID is already in use.');
+                        await supabase.from('profiles').upsert({
+                          user_id: authUser.id,
+                          student_id: profileStudentId,
+                        });
+                      }
+                      // Update password if provided
+                      if (profilePassword.trim()) {
+                        const { error } = await supabase.auth.updateUser({ password: profilePassword.trim() });
+                        if (error) throw error;
+                      }
+                      setProfileMsg('Saved');
+                      // Reflect in top bar locally
+                      if (profileStudentId) setHeaderStudentId(profileStudentId);
+                    } catch (e) {
+                      setProfileMsg(e?.message || 'Failed to save');
+                    } finally {
+                      setProfileSaving(false);
+                    }
+                  }}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {profileSaving ? 'Saving...' : 'Save'}
+                        </button>
+                      </div>
             </div>
           </div>
         </div>

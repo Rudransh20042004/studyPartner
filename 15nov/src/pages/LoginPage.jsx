@@ -64,18 +64,31 @@ export default function LoginPage({ onSuccess }) {
           return;
         }
 
-        // Sign-in failed. Determine if it's wrong password or new user.
-        const text = (signInErr?.message || '').toLowerCase();
-        if (text.includes('invalid login') || text.includes('invalid email or password') || signInErr?.status === 400) {
-          setMsg('Incorrect password. Try again or use “Forgot password?”.');
+        // Sign-in failed. Supabase returns the same message for wrong password and unknown user.
+        // Probe by attempting sign-up: if "already registered" -> it's an existing user with wrong password.
+        try {
+          const { error: signupProbeErr } = await supabase.auth.signUp({ email, password });
+          if (signupProbeErr) {
+            const t = (signupProbeErr.message || '').toLowerCase();
+            const already = t.includes('already registered') || signupProbeErr.status === 422;
+            if (already) {
+              setMsg('Incorrect password. Try again or use “Forgot password?”.');
+            } else {
+              setMsg(signupProbeErr.message || 'Sign-in failed');
+            }
+            setLoading(false);
+            return;
+          }
+          // Sign-up created a new account → collect profile now
+          setShowProfile(true);
+          setMsg('Create your account by adding your Student ID and Name');
+          setLoading(false);
+          return;
+        } catch (probeErr) {
+          setMsg(probeErr?.message || 'Sign-in failed');
           setLoading(false);
           return;
         }
-        // Otherwise assume user does not exist yet → profile flow to sign up
-        setShowProfile(true);
-        setMsg('Create your account by adding your Student ID and Name');
-        setLoading(false);
-        return;
       }
 
       // Profile mode: create account, then upsert profile, then sign in
@@ -100,6 +113,16 @@ export default function LoginPage({ onSuccess }) {
       // Upsert profile with studentId and fullName
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
+        // Enforce unique Student ID
+        const { data: conflict } = await supabase
+          .from('profiles')
+          .select('user_id')
+          .eq('student_id', studentId)
+          .neq('user_id', user.id)
+          .maybeSingle();
+        if (conflict) {
+          throw new Error('This Student ID is already in use by another account.');
+        }
         await supabase.from('profiles').upsert({
           user_id: user.id,
           student_id: studentId,
