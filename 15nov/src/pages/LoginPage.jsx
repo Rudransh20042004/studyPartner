@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import LoginHeroBackground from '../components/ui/LoginHeroBackground';
+import LoginGlassCard from '../components/ui/LoginGlassCard';
 
 export default function LoginPage({ onSuccess }) {
   const [email, setEmail] = useState('');
@@ -165,8 +167,10 @@ export default function LoginPage({ onSuccess }) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4" style={{background:'linear-gradient(180deg, #fff6f7 0%, #ffffff 100%)'}}>
-      <form onSubmit={handleAuth} className="w-full max-w-lg bg-white p-8 rounded-lg shadow-md">
+    <div className="relative min-h-screen flex items-center justify-center p-6">
+      <LoginHeroBackground />
+      <LoginGlassCard>
+      <form onSubmit={handleAuth}>
         <div className="mb-4 text-center">
           <img src="/mcgill.png" alt="McGill crest" style={{height: 72, margin: '0 auto 10px'}} onError={(e)=>{ e.currentTarget.style.display='none'; }} />
           <img src="/myPeers.png" alt="myPeers" style={{height: 42, margin: '0 auto 6px'}} onError={(e)=>{ e.currentTarget.style.display='none'; }} />
@@ -251,6 +255,7 @@ export default function LoginPage({ onSuccess }) {
           </div>
         )}
       </form>
+      </LoginGlassCard>
     </div>
   );
 }

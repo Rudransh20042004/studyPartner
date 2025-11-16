@@ -1,11 +1,36 @@
-import { useState, useEffect } from 'react';
+
+
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { LogOut, Edit2, Check, X, MessageSquare, Database } from 'lucide-react';
 import { initCrossTabSync } from '../utils/crossTabSync';
 import { supabase } from '../lib/supabaseClient';
 import { getRecentSessionsSupabase, getMyActiveSessionSupabase, updateHeartbeatSupabase, updateSessionSupabase, leaveSessionSupabase, sendMessageSupabase, listInboxSupabase, markMessageReadSupabase, listConversationSupabase, subscribeConversationSupabase, sendImageMessageSupabase, sendPdfMessageSupabase, deleteMessageFileSupabase, markConversationReadSupabase } from '../utils/sessionsSupabase';
 import SessionCard from './SessionCard';
+import DashboardShell from './ui/DashboardShell';
+import UiSessionCard from './ui/SessionCard';
+import TiltWrapper from './ui/fx/TiltWrapper';
+import ShimmerOverlay from './ui/fx/ShimmerOverlay';
+import ChatMessageBubble from './ui/ChatMessageBubble';
+import ChatWindowShell from './ui/ChatWindowShell';
+import MotionFadeSlide from './ui/MotionFadeSlide';
+import MotionModal from './ui/MotionModal';
+import AnimatedButton from './ui/AnimatedButton';
+import TypingDots from './ui/TypingDots';
 import ConnectModal from './ConnectModal';
 import DatabaseView from './DatabaseView';
+import BackgroundBlobs from './ui/fx/BackgroundBlobs';
+import FloatingIconOrbit from './ui/fx/FloatingIconOrbit';
+import RippleAmbient from './ui/fx/RippleAmbient';
+import ConfettiBurst from './ui/ConfettiBurst';
+
+import GroupDock from './ui/GroupDock';
+import Avatar from './ui/Avatar';
+import MotionCoachMarks from './ui/MotionCoachMarks';
+import PopularChips from './ui/PopularChips';
+import SuggestedBuddies from './ui/SuggestedBuddies';
+import ReactionsDock from './ui/ReactionsDock';
+import ReactionRain from './ui/ReactionRain';
+import WhiteboardDock from './ui/WhiteboardDock';
 
 const Dashboard = ({ onLeave, onLogout, user }) => {
   const [mySession, setMySession] = useState(null);
@@ -30,6 +55,10 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   const [debugInfo, setDebugInfo] = useState({});
   const [showDebug, setShowDebug] = useState(false);
   const [showDatabase, setShowDatabase] = useState(false);
+  const [celebrate, setCelebrate] = useState(false);
+  const hasCelebratedRef = useRef(false);
+  const [groupCode, setGroupCode] = useState(null);
+  const [perfMode, setPerfMode] = useState(false);
   // Profile modal state
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileStudentId, setProfileStudentId] = useState('');
@@ -123,6 +152,48 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     };
   }, [onLeave]);
 
+  // One-time celebration when ready
+  useEffect(() => {
+    if (!isLoading && mySession && !hasCelebratedRef.current) {
+      setCelebrate(true);
+      const t = setTimeout(() => setCelebrate(false), 1800);
+      hasCelebratedRef.current = true;
+      return () => clearTimeout(t);
+    }
+  }, [isLoading, mySession]);
+
+  // Initialize performance mode from localStorage or prefers-reduced-motion
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('mp_perf_mode');
+      if (stored != null) {
+        setPerfMode(stored === '1');
+        return;
+      }
+      const prefersReduced = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (prefersReduced) setPerfMode(true);
+    } catch {}
+  }, []);
+
+  const togglePerfMode = () => {
+    setPerfMode((p) => {
+      const next = !p;
+      try { localStorage.setItem('mp_perf_mode', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  };
+
+  // Listen for group join/leave events from GroupDock (UI-only)
+  useEffect(() => {
+    const onJoin = (e) => setGroupCode(e?.detail?.code || null);
+    const onLeft = () => setGroupCode(null);
+    window.addEventListener('group:joined', onJoin);
+    window.addEventListener('group:left', onLeft);
+    return () => {
+      window.removeEventListener('group:joined', onJoin);
+      window.removeEventListener('group:left', onLeft);
+    };
+  }, []);
   // Set up heartbeat and refresh intervals after session is loaded
   useEffect(() => {
     if (!mySession) return;
@@ -321,17 +392,15 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     };
   }, [mySession?.userId, showMessageModal, selectedUser?.userId, selectedUser?.id]);
 
-  const filteredSessions = allSessions.filter(session => {
-    // Always exclude own session from filtered list (it's shown separately)
-    if (session.id === mySession?.id) return false;
-    
-    if (filter === 'all') return true;
-    if (filter === 'myCourse') return session.courseCode === mySession?.courseCode;
-    
-    // Filter by department
-    const dept = filter.toUpperCase();
-    return session.courseCode.startsWith(dept);
-  });
+  const filteredSessions = useMemo(() => {
+    return allSessions.filter(session => {
+      if (session.id === mySession?.id) return false;
+      if (filter === 'all') return true;
+      if (filter === 'myCourse') return session.courseCode === mySession?.courseCode;
+      const dept = filter.toUpperCase();
+      return session.courseCode.startsWith(dept);
+    });
+  }, [allSessions, mySession?.id, mySession?.courseCode, filter]);
   
   // Debug: Log what we're seeing
   console.log('[Dashboard] State:', {
@@ -356,7 +425,6 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     allSessions.forEach(session => {
       courseCounts[session.courseCode] = (courseCounts[session.courseCode] || 0) + 1;
     });
-    
     return Object.entries(courseCounts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
@@ -373,8 +441,8 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     return deptCounts;
   };
 
-  const courseCounts = getDepartmentCounts();
-  const myCourseCount = mySession ? allSessions.filter(s => s.courseCode === mySession.courseCode).length : 0;
+  const courseCounts = useMemo(() => getDepartmentCounts(), [allSessions]);
+  const myCourseCount = useMemo(() => mySession ? allSessions.filter(s => s.courseCode === mySession.courseCode).length : 0, [allSessions, mySession]);
 
   if (isLoading) {
     return (
@@ -394,18 +462,35 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   const popularCourses = getPopularCourses();
 
   return (
-    <div className="min-h-screen" style={{background:'linear-gradient(180deg, #fff6f7 0%, #ffffff 100%)'}}>
+    <DashboardShell>
+      {!perfMode && <ConfettiBurst fire={celebrate} />}
+      {!perfMode && <ReactionRain />}
+      <MotionCoachMarks />
+      <MotionFadeSlide>
+      {!perfMode && <BackgroundBlobs />}
+      {!perfMode && <FloatingIconOrbit />}
+      {!perfMode && <RippleAmbient />}
+
       {/* Top Bar */}
       <div className="bg-white border-b border-gray-200 px-4 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/dashboard.png" alt="myPeers" className="h-8" onError={(e)=>{ e.currentTarget.style.display='none'; }} />
-            <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold font-mono">
-              {mySession.courseCode}
-            </span>
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0 shrink-0">
+            <img src="/dashboard.png" alt="myPeers" className="h-8 shrink-0" onError={(e)=>{ e.currentTarget.style.display='none'; }} />
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap flex-1 ml-4 pr-2">
+            <GroupDock userId={mySession.userId} userName={mySession.name} />
+            <ReactionsDock groupCode={groupCode} />
+            <WhiteboardDock groupCode={groupCode} />
             <button
+              onClick={togglePerfMode}
+              className={`text-xs px-2.5 py-1 rounded-full border ${perfMode ? 'bg-gray-100 border-gray-300' : 'bg-white/70 border-white/40 hover:bg-white'}`}
+              title="Toggle Performance Mode"
+            >
+              {perfMode ? 'Performance: On' : 'Performance: Off'}
+            </button>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <AnimatedButton
               onClick={async () => {
                 await checkMessages(); // Refresh messages before opening
                 setShowInbox(true);
@@ -414,15 +499,15 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
             >
               <MessageSquare className="w-5 h-5" />
               {unreadMessages > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center unread-glow">
                   {unreadMessages}
                 </span>
               )}
               <span className="hidden md:inline">Messages</span>
-            </button>
+            </AnimatedButton>
             <div className="flex items-center gap-2">
               {user && (
-                <button
+                <AnimatedButton
                   type="button"
                   onClick={() => {
                     setShowProfileModal(true);
@@ -436,22 +521,22 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   <span className="font-semibold text-gray-800">{user.name}</span>
                   <span className="text-gray-400 mx-1">•</span>
                   <span className="font-mono text-sm">{headerStudentId || user.studentId}</span>
-                </button>
+                </AnimatedButton>
               )}
-              <button
+              <AnimatedButton
                 onClick={handleLeave}
                 className="flex items-center gap-2 px-4 py-2 text-orange-600 hover:bg-orange-50 rounded-lg transition-all duration-200 font-medium"
               >
                 <LogOut className="w-4 h-4" />
                 Leave Session
-              </button>
+              </AnimatedButton>
               {onLogout && (
-                <button
+                <AnimatedButton
                   onClick={onLogout}
                   className="flex items-center gap-2 px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg transition-all duration-200 font-medium"
                 >
                   Logout
-                </button>
+                </AnimatedButton>
               )}
             </div>
           </div>
@@ -464,19 +549,22 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
           <div className="lg:col-span-3 space-y-6">
             {/* Removed Online Users Section as requested */}
             {/* Your Session Card */}
-            <div className="bg-white rounded-lg shadow-md p-6 border-2 border-blue-200">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold text-gray-900">Your Session</h2>
+            <TiltWrapper className="rounded-[22px] p-[1.5px] bg-[length:200%_200%] border border-transparent animate-float-slow hover:animate-float-hover transition-transform"
+              style={{ backgroundImage: 'linear-gradient(135deg, rgba(239,68,68,0.5), rgba(252,165,165,0.3), rgba(239,68,68,0.5))', animation: 'gradientMove 8s ease-in-out infinite', transformStyle: 'preserve-3d' }}>
+              <div className="rounded-[20px] bg-white/70 backdrop-blur-sm shadow-[0_10px_36px_rgba(0,0,0,0.12)] hover:shadow-[0_12px_44px_rgba(0,0,0,0.16)] transition-shadow p-8 lg:p-10 relative overflow-hidden will-change-transform shimmer-overlay">
+                <div className="pointer-events-none absolute -top-8 left-0 right-0 h-12 bg-gradient-to-b from-white/40 to-transparent opacity-80" />
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="font-semibold text-[1.4rem] tracking-tight text-gray-900">Your Session</h2>
                 {!isEditing && (
-                  <button
+                    <AnimatedButton
                     onClick={() => setIsEditing(true)}
                     className="flex items-center gap-2 text-blue-600 hover:text-blue-700 transition-colors"
                   >
                     <Edit2 className="w-4 h-4" />
                     Edit
-                  </button>
+                  </AnimatedButton>
                 )}
-              </div>
+                </div>
 
               {isEditing ? (
                 <div className="space-y-4">
@@ -540,15 +628,15 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                     </div>
                   </div>
 
-                  <div className="flex gap-3">
-                    <button
+                    <div className="flex gap-3">
+                    <AnimatedButton
                       onClick={handleSaveEdit}
                       className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-all"
                     >
                       <Check className="w-4 h-4" />
                       Save
-                    </button>
-                    <button
+                    </AnimatedButton>
+                    <AnimatedButton
                       onClick={() => {
                         setIsEditing(false);
                         setEditWorkingOn(mySession.workingOn || '');
@@ -559,57 +647,75 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                     >
                       <X className="w-4 h-4" />
                       Cancel
-                    </button>
+                    </AnimatedButton>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  <div>
-                    <p className="text-sm text-gray-500">Name</p>
-                    <p className="text-lg font-semibold text-gray-900">{mySession.name}</p>
-                  </div>
-                  {mySession.studentId && (
-                    <div>
-                      <p className="text-sm text-gray-500">Student ID</p>
-                      <p className="font-mono text-sm text-gray-700">{mySession.studentId}</p>
+                <div className="space-y-4">
+                  {groupCode && (
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-semibold">Group {groupCode}</span>
+                      <span className="text-xs text-gray-500">Active</span>
                     </div>
                   )}
                   <div>
-                    <p className="text-sm text-gray-500">Course</p>
+                    <p className="text-sm font-medium text-gray-700">Name</p>
+                    <p className="text-gray-900 font-medium">{mySession.name}</p>
+                  </div>
+                  {mySession.studentId && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-700">Student ID</p>
+                      <p className="font-mono text-sm text-gray-900">{mySession.studentId}</p>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">Course</p>
                     <p className="font-mono font-semibold text-blue-600">{mySession.courseCode}</p>
                   </div>
                   {mySession.workingOn && (
                     <div>
-                      <p className="text-sm text-gray-500">Working on</p>
-                      <p className="text-gray-900">{mySession.workingOn}</p>
+                      <p className="text-sm font-medium text-gray-700">Working on</p>
+                      <p className="text-gray-900 font-medium">{mySession.workingOn}</p>
                     </div>
                   )}
                   {mySession.location && (
                     <div>
-                      <p className="text-sm text-gray-500">Where</p>
-                      <p className="text-gray-900">{mySession.location}</p>
+                      <p className="text-sm font-medium text-gray-700">Where</p>
+                      <p className="text-gray-900 font-medium">{mySession.location}</p>
                     </div>
                   )}
                   <div>
-                    <p className="text-sm text-gray-500">Status</p>
+                    <p className="text-sm font-medium text-gray-700">Status</p>
                     <div className="flex items-center gap-2">
                       <div className={`w-3 h-3 rounded-full ${
                         mySession.status === 'active' ? 'bg-green-500' : 'bg-orange-500'
                       }`}></div>
-                      <span className="text-gray-900 capitalize">
+                      <span className="text-gray-900 font-medium capitalize">
                         {mySession.status === 'active' ? 'Studying Now' : 'Taking a Break'}
                       </span>
                     </div>
                   </div>
                 </div>
               )}
-            </div>
+              </div>
+            </TiltWrapper>
 
             {/* Filter and Sessions Feed */}
             <div>
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">Active Sessions</h2>
+                  <div className="mt-1 h-1 w-12 rounded-full bg-red-500/60" />
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      onClick={()=> setFilter('myCourse')}
+                      className={`px-2.5 py-1 rounded-full text-xs border ${filter==='myCourse' ? 'bg-red-600 text-white border-red-600' : 'bg-white/80 border-white/50 hover:bg-white'}`}
+                      title="Show sessions in your course (Group-friendly)"
+                    >
+                      Groups
+                    </button>
+                  </div>
+                  <PopularChips courseCounts={courseCounts} onSelect={(dept)=> setFilter(dept)} />
                   {filter === 'myCourse' && mySession && (
                     <p className="text-sm text-gray-600 mt-1">
                       {myCourseCount} {myCourseCount === 1 ? 'student' : 'students'} studying {mySession.courseCode}
@@ -639,33 +745,49 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
               </div>
 
               {filteredSessions.length === 0 ? (
-                <div className="bg-white rounded-lg shadow-sm p-12 text-center">
+                <div className="relative rounded-2xl bg-white/60 backdrop-blur-sm shadow-sm p-12 text-center border border-white/40 overflow-hidden">
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-20">
+                    <span className="animate-float-slow text-6xl">📚</span>
+                  </div>
                   <p className="text-gray-500 text-lg">
-                    No one studying right now - be the first!
+                    📚 No one studying right now — be the first!
                   </p>
                 </div>
               ) : (
-                <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+                <div className={`rounded-2xl bg-white/60 backdrop-blur-sm shadow-sm border border-white/40 overflow-hidden relative shimmer-overlay backdrop-blur-md ${celebrate ? 'sweep-highlight' : ''}`}>
                   <div className="divide-y">
                     {filteredSessions.map((session, idx) => (
-                      <div key={session.id} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-red-50'} flex items-center justify-between px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg`}>
-                        <div className="flex items-center gap-4">
-                          <div className={`w-2 h-2 rounded-full ${session.status === 'active' ? 'bg-green-500' : 'bg-orange-500'}`}></div>
-                          <div>
-                            <div className="font-semibold text-gray-900">{session.name}</div>
-                            <div className="text-xs text-gray-500 font-mono">{session.studentId}</div>
+                      <UiSessionCard key={session.id}>
+                        <TiltWrapper>
+                        <div className="relative transition-all duration-200 hover:shadow-[0_0_24px_rgba(255,0,0,0.12)] hover:-translate-y-[2px]">
+                          <div className={`${idx % 2 === 0 ? 'bg-white/90' : 'bg-red-50/80'} flex items-center justify-between px-4 py-3 rounded-xl relative transition-transform duration-200 will-change-transform shimmer-overlay`}>
+                          <div className="flex items-center gap-4">
+                            <div className={`w-2 h-2 rounded-full ${session.status === 'active' ? 'bg-green-500' : 'bg-orange-500'}`}></div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <Avatar name={session.name} size={26} />
+                                <span className="font-semibold text-gray-900">{session.name}</span>
+                              </div>
+                              <div className="text-xs text-gray-500 font-mono">{session.studentId}</div>
+                            </div>
+                            <div className="font-mono font-semibold text-blue-600">{session.courseCode}</div>
+                            {session.workingOn && <div className="text-sm text-gray-600">• {session.workingOn}</div>}
+                            {session.location && <div className="text-xs text-gray-500">• 📍 {session.location}</div>}
                           </div>
-                          <div className="font-mono font-semibold text-blue-600">{session.courseCode}</div>
-                          {session.workingOn && <div className="text-sm text-gray-600">• {session.workingOn}</div>}
-                          {session.location && <div className="text-xs text-gray-500">• 📍 {session.location}</div>}
+                          <AnimatedButton
+                            onClick={() => handleConnect(session)}
+                            className="px-3 py-1 border rounded hover:bg-gray-50"
+                          >
+                            Connect
+                          </AnimatedButton>
+                          <div className="pointer-events-none absolute inset-0">
+                            <div className="sparkle absolute top-2 left-6 w-1 h-1 bg-red-400 rounded-full opacity-60"></div>
+                            <div className="sparkle absolute bottom-2 right-10 w-1.5 h-1.5 bg-red-300 rounded-full opacity-60"></div>
+                          </div>
+                          </div>
                         </div>
-                        <button
-                          onClick={() => handleConnect(session)}
-                          className="px-3 py-1 border rounded hover:bg-gray-50"
-                        >
-                          Connect
-                        </button>
-                      </div>
+                        </TiltWrapper>
+                      </UiSessionCard>
                     ))}
                   </div>
                 </div>
@@ -676,6 +798,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
           {/* Sidebar */}
           <div className="lg:col-span-1">
             <div className="bg-white rounded-lg shadow-sm p-6 space-y-6 sticky top-4">
+              <SuggestedBuddies mySession={mySession} allSessions={allSessions} />
               <div>
                 <h3 className="font-semibold text-gray-900 mb-3">Popular Courses Right Now</h3>
                 {popularCourses.length === 0 ? (
@@ -703,6 +826,12 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
         </div>
       </div>
 
+      {/* Optional subtle sparkles near bottom */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden -z-10">
+        <div className="sparkle w-2 h-2 bg-red-300 rounded-full absolute top-1/3 left-1/4 animate-ping" />
+        <div className="sparkle w-2 h-2 bg-pink-300 rounded-full absolute top-2/3 right-1/3 animate-ping delay-500" />
+      </div>
+
       {selectedSession && (
         <ConnectModal
           session={selectedSession}
@@ -718,19 +847,17 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
 
       {/* Message Modal - Chat thread */}
       {showMessageModal && selectedUser && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-lg w-full p-6 flex flex-col h-[70vh]">
-            <div className="mb-3">
-              <h3 className="text-lg font-bold">Chat with {selectedUser.name}</h3>
-              <p className="text-xs text-gray-500 font-mono">{selectedUser.courseCode}</p>
-            </div>
-            <div className="flex-1 overflow-y-auto border rounded p-3 bg-gray-50">
+        <MotionModal isOpen={showMessageModal}>
+          <ChatWindowShell
+            title={`Chat with ${selectedUser.name}`}
+            subtitle={selectedUser.courseCode}
+          >
               {conversation.length === 0 ? (
                 <p className="text-sm text-gray-500">No messages yet. Say hi!</p>
               ) : (
                 conversation.map((msg) => (
                   <div key={msg.id} className={`mb-2 flex ${msg.from_user === mySession?.userId ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-xs px-3 py-2 rounded-lg ${msg.from_user === mySession?.userId ? 'bg-blue-600 text-white' : 'bg-white border'}`}>
+                    <ChatMessageBubble variant={msg.from_user === mySession?.userId ? 'outgoing' : 'incoming'}>
                       {msg.image_url ? (
                         msg.image_url.toLowerCase().endsWith('.pdf') ? (
                           <a href={msg.image_url} target="_blank" rel="noreferrer" className={`${msg.from_user === mySession?.userId ? 'text-white' : 'text-blue-700'} underline`}>
@@ -764,25 +891,27 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                           </button>
               )}
             </div>
-            </div>
+                    </ChatMessageBubble>
                   </div>
                 ))
               )}
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2 items-center justify-between">
+          </ChatWindowShell>
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-full max-w-xl px-4">
+            <div className="flex flex-wrap gap-2 items-center justify-between bg-gradient-to-br from-white/96 to-white/80 backdrop-blur-md rounded-xl p-3 shadow border border-white/40" style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 10px 30px rgba(0,0,0,0.06)' }}>
+              <TypingDots />
               <input
               value={message}
               onChange={(e) => setMessage(e.target.value)}
                 placeholder="Type a message"
                 className="flex-1 min-w-[180px] border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
-              <button
+              <AnimatedButton
                 onClick={sendMessage}
                 disabled={!message.trim()}
                 className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
               >
                 Send
-              </button>
+              </AnimatedButton>
               <label className="px-3 py-2 border rounded cursor-pointer hover:bg-gray-50">
                 Attach
                 <input
@@ -800,7 +929,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                 />
               </label>
               {imageFile && (
-                <button
+                <AnimatedButton
                   onClick={async () => {
                     try {
                       const toId = selectedUser.userId || selectedUser.user_id || selectedUser.id;
@@ -821,9 +950,9 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 whitespace-nowrap"
                 >
                   Send File
-                </button>
+                </AnimatedButton>
               )}
-              <button
+              <AnimatedButton
                 onClick={() => {
                   setShowMessageModal(false);
                   setSelectedUser(null);
@@ -834,10 +963,10 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                 className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 whitespace-nowrap"
               >
                 Close
-              </button>
+              </AnimatedButton>
             </div>
           </div>
-        </div>
+        </MotionModal>
       )}
 
       {/* Inbox Modal */}
@@ -853,7 +982,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   </p>
                 )}
               </div>
-              <button
+              <AnimatedButton
                 onClick={() => {
                   setShowInbox(false);
                   // Refresh messages when closing
@@ -862,7 +991,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                 className="text-gray-500 hover:text-gray-700"
               >
                 <X className="w-5 h-5" />
-              </button>
+              </AnimatedButton>
             </div>
             
             <div className="flex-1 overflow-y-auto">
@@ -890,7 +1019,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                 return (
                   <div className="space-y-2">
                     {entries.map(([otherId, info]) => (
-                        <button
+                        <AnimatedButton
                         key={otherId}
                         onClick={() => {
                           const otherSession = allSessions.find(s => s.userId === otherId);
@@ -906,7 +1035,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                             {info.unread}
                             </span>
                           )}
-                        </button>
+                        </AnimatedButton>
                     ))}
                         </div>
                 );
@@ -922,9 +1051,9 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
           <div className="bg-white rounded-lg max-w-md w-full p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-bold">Your Profile</h3>
-              <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-gray-700">
+              <AnimatedButton onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-gray-700">
                 <X className="w-5 h-5" />
-              </button>
+              </AnimatedButton>
             </div>
             <div className="space-y-4">
               <div>
@@ -951,13 +1080,13 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                 <div className="text-sm">{profileMsg}</div>
               )}
               <div className="flex items-center justify-end gap-2">
-                        <button
+                        <AnimatedButton
                   onClick={() => setShowProfileModal(false)}
                   className="px-3 py-2 border rounded-lg hover:bg-gray-50"
                 >
                   Close
-                </button>
-                <button
+                </AnimatedButton>
+                <AnimatedButton
                   disabled={profileSaving}
                   onClick={async () => {
                     setProfileSaving(true);
@@ -997,13 +1126,14 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
                 >
                   {profileSaving ? 'Saving...' : 'Save'}
-                        </button>
+                </AnimatedButton>
                       </div>
             </div>
           </div>
         </div>
       )}
-    </div>
+      </MotionFadeSlide>
+    </DashboardShell>
   );
 };
 
