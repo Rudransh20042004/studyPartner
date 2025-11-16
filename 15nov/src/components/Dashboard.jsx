@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { LogOut, Edit2, Check, X, MessageSquare, Database } from 'lucide-react';
-import { getAllSessions, getMySession, updateHeartbeat, updateSession, leaveSession } from '../utils/storage';
-import { initCrossTabSync, onTabMessage, onStorageChange, broadcastToTabs } from '../utils/crossTabSync';
+import { initCrossTabSync } from '../utils/crossTabSync';
+import { supabase } from '../lib/supabaseClient';
+import { getRecentSessionsSupabase, getMyActiveSessionSupabase, updateHeartbeatSupabase, updateSessionSupabase, leaveSessionSupabase, sendMessageSupabase, listInboxSupabase, markMessageReadSupabase, listConversationSupabase, subscribeConversationSupabase, sendImageMessageSupabase, sendPdfMessageSupabase, deleteMessageFileSupabase, markConversationReadSupabase } from '../utils/sessionsSupabase';
 import SessionCard from './SessionCard';
 import ConnectModal from './ConnectModal';
 import DatabaseView from './DatabaseView';
@@ -22,122 +23,57 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [showInbox, setShowInbox] = useState(false);
   const [inboxMessages, setInboxMessages] = useState([]);
+  const [imageFile, setImageFile] = useState(null);
+  const [conversation, setConversation] = useState([]);
+  const [conversationUnsub, setConversationUnsub] = useState(null);
   const [mySessionId, setMySessionId] = useState(null);
   const [debugInfo, setDebugInfo] = useState({});
   const [showDebug, setShowDebug] = useState(false);
   const [showDatabase, setShowDatabase] = useState(false);
 
-  // Fetch all sessions EXCEPT your own
+  // Fetch all sessions EXCEPT your own (Supabase)
   const fetchSessions = async () => {
     try {
-      if (!window.storage) {
-        alert('Storage API not available');
-        return;
-      }
-
-      // Get your session ID
-      const myIdData = await window.storage.get('my_session_id', false);
-      const myId = myIdData?.value;
-      setMySessionId(myId);
-
-      // Get your session details
-      const session = await getMySession();
-      if (!session) {
+      const my = await getMyActiveSessionSupabase();
+      if (!my) {
         onLeave();
         return;
       }
-
-      setMySession(session);
-      setEditWorkingOn(session.workingOn || '');
-      setEditLocation(session.location || '');
-      setEditStatus(session.status);
-
-      // Get ALL sessions with 'session:' prefix
-      const result = await window.storage.list('session:', true);
-      const allSessions = [];
-      const now = Date.now();
-      
-      console.log(`[fetchSessions] Found ${result.keys.length} session keys, my ID: ${myId}`);
-      console.log(`[fetchSessions] All session keys:`, result.keys);
-      
-      // Also manually check localStorage to see what's actually there
-      if (typeof Storage !== 'undefined') {
-        const manualKeys = [];
-        const allLocalStorageKeys = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          allLocalStorageKeys.push(key);
-          if (key && key.startsWith('shared_session:')) {
-            manualKeys.push(key);
-            // Try to get the value directly
-            try {
-              const value = localStorage.getItem(key);
-              if (value) {
-                const session = JSON.parse(value);
-                console.log(`[fetchSessions] Direct localStorage session: ${session.name} (${session.courseCode}) - ID: ${key}`);
-              }
-            } catch (e) {
-              console.error(`[fetchSessions] Error parsing localStorage value for ${key}:`, e);
-            }
-          }
-        }
-        console.log(`[fetchSessions] Total localStorage keys: ${allLocalStorageKeys.length}`, allLocalStorageKeys);
-        console.log(`[fetchSessions] Manual localStorage check found ${manualKeys.length} shared_session: keys:`, manualKeys);
-        
-        // Check if we can see other sessions
-        if (manualKeys.length > 1) {
-          console.log(`[fetchSessions] ✅ Found ${manualKeys.length} sessions in localStorage - should be visible!`);
-        } else if (manualKeys.length === 1) {
-          console.log(`[fetchSessions] ⚠️ Only found 1 session in localStorage - other users may be in different browser windows/incognito`);
-        }
+      const mine = {
+        id: my.id,
+        userId: my.user_id,
+        name: my.name,
+        studentId: my.student_id,
+        courseCode: my.course_code,
+        workingOn: my.working_on,
+        location: my.location,
+        status: my.status,
+        lastActive: my.last_active,
+      };
+      setMySession(mine);
+      setMySessionId(mine.id);
+      if (!isEditing) {
+        setEditWorkingOn(mine.workingOn || '');
+        setEditLocation(mine.location || '');
+        setEditStatus(mine.status || 'active');
       }
-      
-      for (const key of result.keys) {
-        // Skip your own session
-        if (key === myId) {
-          console.log(`[fetchSessions] Skipping own session: ${key}`);
-          continue;
-        }
-        
-        try {
-          const data = await window.storage.get(key, true);
-          console.log(`[fetchSessions] Getting key "${key}":`, data ? 'Found' : 'Not found', data);
-          
-          if (data && data.value) {
-            const session = JSON.parse(data.value);
-            console.log(`[fetchSessions] Parsed session:`, {
-              id: session.id,
-              name: session.name,
-              studentId: session.studentId,
-              courseCode: session.courseCode,
-              lastActive: new Date(session.lastActive).toLocaleTimeString(),
-              ageSeconds: Math.floor((now - session.lastActive) / 1000)
-            });
-            
-            // Only include sessions active in last 5 minutes
-            const ageSeconds = Math.floor((now - session.lastActive) / 1000);
-            if (now - session.lastActive < 300000) {
-              allSessions.push(session);
-              console.log(`[fetchSessions] ✅ Added session: ${session.name} - ${session.courseCode} (ID: ${session.id}, Age: ${ageSeconds}s)`);
-            } else {
-              // Clean up stale sessions
-              console.log(`[fetchSessions] 🧹 Removing stale session: ${session.id} (Age: ${ageSeconds}s)`);
-              await window.storage.delete(key, true).catch(e => console.log('Cleanup failed:', e));
-            }
-          } else {
-            console.warn(`[fetchSessions] ⚠️ No data for key: ${key}`);
-          }
-        } catch (e) {
-          console.error(`[fetchSessions] ❌ Error parsing session ${key}:`, e);
-        }
-      }
-      
-      console.log(`[fetchSessions] ✅ Final result: ${allSessions.length} active sessions:`, 
-        allSessions.map(s => `${s.name} (${s.courseCode})`));
-      
-      // Sort by most recent activity
-      allSessions.sort((a, b) => b.lastActive - a.lastActive);
-      setAllSessions(allSessions);
+
+      const rows = await getRecentSessionsSupabase();
+      // Map to UI shape and exclude own
+      const others = rows
+        .filter(r => r.id !== mine.id)
+        .map(r => ({
+          id: r.id,
+          userId: r.user_id,
+          name: r.name,
+          studentId: r.student_id,
+          courseCode: r.course_code,
+          workingOn: r.working_on,
+          location: r.location,
+          status: r.status,
+          lastActive: r.last_active,
+        }));
+      setAllSessions(others);
       setIsLoading(false);
     } catch (e) {
       console.error('Error fetching sessions:', e);
@@ -145,226 +81,34 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     }
   };
 
-  // Check for messages
+  // Check for messages (Supabase)
   const checkMessages = async () => {
-    if (!mySessionId) return;
-    
     try {
-      const result = await window.storage.list('message:', true);
-      const allMyMessages = [];
-      const unreadCount = [];
-      
-      console.log(`[checkMessages] Checking messages for session: ${mySessionId}`);
-      console.log(`[checkMessages] Found ${result.keys.length} message keys`);
-      
-      for (const key of result.keys) {
-        // Message format: message:FROM_ID:TO_ID:TIMESTAMP
-        // Session IDs contain colons (session:timestamp:random), so we need to be careful
-        // Split by ':' and reconstruct: parts[0] = 'message', parts[1] = FROM_ID, parts[2] = TO_ID, parts[3+] = TIMESTAMP
-        const parts = key.split(':');
-        console.log(`[checkMessages] Parsing key: ${key}, parts:`, parts);
-        
-        if (parts.length >= 4) {
-          // Reconstruct session IDs (they contain colons)
-          // FROM_ID starts at parts[1], TO_ID is the last part before timestamp
-          // Actually, let's use a different approach - find the pattern
-          const messagePrefix = 'message:';
-          if (!key.startsWith(messagePrefix)) continue;
-          
-          const afterPrefix = key.substring(messagePrefix.length);
-          // Find the second occurrence of a session ID pattern
-          // Session IDs are like: session:123456789:abc
-          // So we need: message:session:123:abc:session:456:def:timestamp
-          // Better: use regex or find the pattern
-          
-          // Actually simpler: get the message data and check msg.to
-          try {
-            const data = await window.storage.get(key, true);
-            console.log(`[checkMessages] Got data for ${key}:`, data);
-            
-            if (data && data.value) {
-              const msg = JSON.parse(data.value);
-              console.log(`[checkMessages] Parsed message:`, msg);
-              
-              // Check if message is TO us using the message data
-              if (msg.to === mySessionId) {
-                console.log(`[checkMessages] ✅ Message is for me! From: ${msg.fromName}, To: ${msg.toName}`);
-                
-                allMyMessages.push({
-                  ...msg,
-                  key: key,
-                  id: key
-                });
-                
-                if (!msg.read) {
-                  unreadCount.push(msg);
-                }
-                
-                console.log(`[checkMessages] ✅ Added message from ${msg.fromName} to ${msg.toName}`);
-              } else {
-                console.log(`[checkMessages] ⏭️ Message not for me: ${msg.to} !== ${mySessionId}`);
-              }
-            } else {
-              console.log(`[checkMessages] ⚠️ No data for key: ${key}`);
-            }
+      const inbox = await listInboxSupabase();
+      setInboxMessages(inbox);
+      setUnreadMessages(inbox.filter(m => !m.read).length);
           } catch (e) {
-            console.error('Error parsing message:', key, e);
-          }
-        } else {
-          console.log(`[checkMessages] ⚠️ Invalid message key format (need at least 4 parts): ${key}`);
-        }
-      }
-      
-      // Sort by timestamp (newest first)
-      allMyMessages.sort((a, b) => b.timestamp - a.timestamp);
-      
-      setInboxMessages(allMyMessages);
-      setUnreadMessages(unreadCount.length);
-      
-      console.log(`[checkMessages] Total messages: ${allMyMessages.length}, Unread: ${unreadCount.length}`);
-    } catch (e) {
-      console.error('Error checking messages:', e);
+      console.error('Error loading inbox:', e);
     }
   };
   
   // Mark message as read
-  const markMessageAsRead = async (messageKey) => {
+  const markMessageAsRead = async (id) => {
     try {
-      const data = await window.storage.get(messageKey, true);
-      if (data && data.value) {
-        const msg = JSON.parse(data.value);
-        msg.read = true;
-        await window.storage.set(messageKey, JSON.stringify(msg), true);
-        console.log('✅ Message marked as read:', messageKey);
-        // Refresh messages
+      await markMessageReadSupabase(id);
         await checkMessages();
-      }
     } catch (e) {
-      console.error('Error marking message as read:', e);
+      console.error('mark read failed', e);
     }
   };
 
-  const debugStorage = async () => {
-    try {
-      const myIdData = await window.storage.get('my_session_id', false);
-      const allKeys = await window.storage.list('session:', true);
-      
-      // Also check localStorage directly
-      const localStorageKeys = [];
-      if (typeof Storage !== 'undefined') {
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key && (key.startsWith('shared_session:') || key.startsWith('personal_'))) {
-            localStorageKeys.push(key);
-          }
-        }
-      }
-      
-      // Get all session data
-      const sessionData = [];
-      for (const key of allKeys.keys) {
-        try {
-          const data = await window.storage.get(key, true);
-          if (data && data.value) {
-            const session = JSON.parse(data.value);
-            sessionData.push({
-              id: session.id,
-              name: session.name,
-              studentId: session.studentId,
-              courseCode: session.courseCode,
-              lastActive: new Date(session.lastActive).toLocaleTimeString(),
-              age: Math.floor((Date.now() - session.lastActive) / 1000) + 's',
-              isActive: (Date.now() - session.lastActive) < 300000
-            });
-          }
-        } catch (e) {
-          console.error('Error getting session data:', e);
-        }
-      }
-      
-      const debug = {
-        mySessionId: myIdData?.value,
-        totalKeys: allKeys.keys.length,
-        keys: allKeys.keys,
-        localStorageKeys: localStorageKeys,
-        localStorageCount: localStorageKeys.length,
-        sessions: sessionData,
-        activeSessions: sessionData.filter(s => s.isActive).length,
-        timestamp: new Date().toLocaleTimeString()
-      };
-      
-      setDebugInfo(debug);
-      console.log('🐛 DEBUG INFO:', debug);
-    } catch (e) {
-      console.error('Debug failed:', e);
-    }
-  };
+  const debugStorage = async () => {};
 
   useEffect(() => {
-    // Initialize cross-tab sync
-    initCrossTabSync();
-    
     fetchSessions();
     
-    // Check if window.storage is available
-    if (typeof window.storage === 'undefined') {
-      console.error('❌ window.storage is NOT available!');
-      alert('Storage API is not available. This app requires window.storage to work.');
-    } else {
-      console.log('✅ window.storage is available');
-      
-      // Test basic operations
-      window.storage.set('test_key', 'test_value', true)
-        .then(() => console.log('✅ Test write successful'))
-        .then(() => window.storage.get('test_key', true))
-        .then(result => {
-          console.log('✅ Test read successful:', result);
-          // Clean up test key
-          window.storage.delete('test_key', true);
-        })
-        .catch(e => console.error('❌ Test failed:', e));
-    }
-    
-    // Listen for messages from other tabs
-    const unsubscribeTabMessage = onTabMessage((message) => {
-      console.log('📨 Tab message received:', message);
-      if (message.type === 'session_created' || message.type === 'session_updated') {
-        // Refresh sessions when another tab creates/updates a session
-        console.log('🔄 Refreshing sessions due to tab message');
-        setTimeout(() => {
-          fetchSessions();
-          debugStorage(); // Also update debug info
-        }, 200); // Small delay to ensure storage is written
-      } else if (message.type === 'message_sent') {
-        // Refresh messages when a new message is sent
-        console.log('📬 New message sent, refreshing inbox');
-        setTimeout(() => {
-          checkMessages();
-        }, 200);
-      }
-    });
-    
-    // Listen for storage changes (for cross-tab sync)
-    // Note: storage events only fire in OTHER tabs, not the current tab
-    const unsubscribeStorage = onStorageChange((change) => {
-      console.log('💾 Storage change detected in another tab:', change);
-      // Refresh sessions and messages when storage changes in another tab
-      console.log('🔄 Refreshing sessions and messages due to storage change');
-      setTimeout(() => {
-        fetchSessions();
-        checkMessages();
-        debugStorage(); // Also update debug info
-      }, 200); // Small delay to ensure storage is written
-    });
-    
-    // Set up debug refresh
-    debugStorage();
-    const debugInterval = setInterval(debugStorage, 5000);
-    
     return () => {
-      clearInterval(debugInterval);
-      unsubscribeTabMessage();
-      unsubscribeStorage();
+      // no-op
     };
   }, [onLeave]);
 
@@ -378,7 +122,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
     // Set up heartbeat interval (every 10 seconds)
     const heartbeatInterval = setInterval(async () => {
       try {
-        await updateHeartbeat(mySession.id);
+        await updateHeartbeatSupabase(mySession.id);
       } catch (e) {
         console.error('Heartbeat failed:', e);
       }
@@ -390,28 +134,54 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
               console.log('[Dashboard] Auto-refreshing sessions...');
               await fetchSessions();
               await checkMessages();
-
-              // Update my session if it still exists
-              const session = await getMySession();
-              if (session) {
-                setMySession(session);
-              } else {
-                onLeave();
-              }
             } catch (e) {
               console.error('Refresh failed:', e);
             }
           }, 5000); // Changed from 10s to 5s for faster updates
 
+    // Do not auto-leave on tab close; keep session until user explicitly leaves
+    const onBeforeUnload = () => {};
+    window.addEventListener('beforeunload', onBeforeUnload);
+
     return () => {
       clearInterval(heartbeatInterval);
       clearInterval(refreshInterval);
+      window.removeEventListener('beforeunload', onBeforeUnload);
     };
   }, [mySession?.id, onLeave]);
 
+  // Realtime: update online users immediately and redirect if my session is deleted elsewhere
+  useEffect(() => {
+    const channel = supabase
+      .channel('sessions-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'sessions' },
+        async (payload) => {
+          try {
+            // If my session was deleted from another tab/device, leave immediately
+            if (payload.eventType === 'DELETE') {
+              if (mySession && payload.old && payload.old.id === mySession.id) {
+                onLeave();
+                return;
+              }
+            }
+            // For inserts/updates/deletes from anyone, refresh the roster quickly
+            await fetchSessions();
+          } catch (e) {
+            console.error('Realtime refresh failed:', e);
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      try { supabase.removeChannel(channel); } catch {}
+    };
+  }, [mySession?.id]);
+
   const handleLeave = async () => {
     try {
-      await leaveSession();
+      await leaveSessionSupabase();
       onLeave();
     } catch (e) {
       console.error('Error leaving session:', e);
@@ -421,7 +191,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
 
   const handleSaveEdit = async () => {
     try {
-      const updated = await updateSession(mySession.id, {
+      const updated = await updateSessionSupabase(mySession.id, {
         workingOn: editWorkingOn,
         location: editLocation,
         status: editStatus
@@ -430,7 +200,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
       setIsEditing(false);
     } catch (e) {
       console.error('Error updating session:', e);
-      alert('Failed to update session. Please try again.');
+      alert(e?.message || 'Failed to update session. Please try again.');
     }
   };
 
@@ -444,54 +214,61 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   };
 
   const sendMessage = async () => {
-    if (!message.trim() || !selectedUser || !mySessionId) {
-      console.log('[sendMessage] Missing data:', { message: message.trim(), selectedUser, mySessionId });
-      return;
-    }
-    
+    if (!message.trim() || !selectedUser) return;
     try {
-      // Create a message key: "message:FROM_ID:TO_ID:TIMESTAMP"
-      const messageId = `message:${mySessionId}:${selectedUser.id}:${Date.now()}`;
-      const messageData = {
-        from: mySessionId,
-        fromName: mySession?.name || 'Unknown',
-        to: selectedUser.id,
-        toName: selectedUser.name,
-        text: message.trim(),
-        timestamp: Date.now(),
-        read: false
-      };
-      
-      console.log('📤 Sending message:', messageId);
-      console.log('📤 Message data:', messageData);
-      
-      await window.storage.set(messageId, JSON.stringify(messageData), true);
-      console.log('✅ Message saved to storage:', messageId);
-      
-      // Verify it was saved
-      const verify = await window.storage.get(messageId, true);
-      console.log('✅ Verification - message in storage:', verify ? 'YES' : 'NO');
-      
-      // Broadcast message to other tabs
-      broadcastToTabs('message_sent', { messageId, messageData });
-      console.log('📡 Broadcasted message to other tabs');
-      
-      // Success feedback
-      alert(`Message sent to ${selectedUser.name}!`);
+      await sendMessageSupabase({
+        toUserId: selectedUser.userId || selectedUser.user_id || selectedUser.id,
+        text: message,
+      });
+      // Optimistically add to the local conversation; subscription will confirm
+      setConversation((prev) => [
+        ...prev,
+        {
+          id: `local-${Date.now()}`,
+          from_user: mySession?.userId,
+          to_user: selectedUser.userId || selectedUser.user_id || selectedUser.id,
+          text: message,
+          created_at: new Date().toISOString(),
+          read: false,
+        },
+      ]);
       setMessage('');
-      setShowMessageModal(false);
-      setSelectedUser(null);
-      
-      // Refresh messages in case we sent to ourselves (testing)
-      setTimeout(() => {
-        console.log('🔄 Refreshing messages after send');
-        checkMessages();
-      }, 500);
     } catch (e) {
-      console.error('❌ Error sending message:', e);
-      alert('Failed to send message. Please try again.');
+      console.error('Send message failed:', e);
+      // keep the modal open; optional toast could be added
     }
   };
+
+  // Load conversation when opening the message modal and subscribe for realtime
+  useEffect(() => {
+    const load = async () => {
+      if (!showMessageModal || !selectedUser) return;
+      try {
+        const conv = await listConversationSupabase(selectedUser.userId || selectedUser.user_id || selectedUser.id);
+        setConversation(conv);
+        // Mark unread from this user as read when opening the chat
+        try {
+          await markConversationReadSupabase(selectedUser.userId || selectedUser.user_id || selectedUser.id);
+          await checkMessages(); // refresh unread counts in inbox
+    } catch (e) {
+          console.error('mark read failed', e);
+        }
+        if (conversationUnsub) conversationUnsub();
+        const unsub = subscribeConversationSupabase(selectedUser.userId || selectedUser.user_id || selectedUser.id, async () => {
+          const latest = await listConversationSupabase(selectedUser.userId || selectedUser.user_id || selectedUser.id);
+          setConversation(latest);
+        });
+        setConversationUnsub(() => unsub);
+      } catch (e) {
+        console.error('Load conversation failed:', e);
+      }
+    };
+    load();
+    return () => {
+      if (conversationUnsub) conversationUnsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showMessageModal, selectedUser?.id, selectedUser?.userId]);
 
   const filteredSessions = allSessions.filter(session => {
     // Always exclude own session from filtered list (it's shown separately)
@@ -535,20 +312,22 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
       .map(([course, count]) => ({ course, count }));
   };
 
-  const getCourseCounts = () => {
-    const courseCounts = {};
+  const getDepartmentCounts = () => {
+    const deptCounts = {};
     allSessions.forEach(session => {
-      courseCounts[session.courseCode] = (courseCounts[session.courseCode] || 0) + 1;
+      const dept = (session.courseCode || '').match(/^[A-Za-z]+/)?.[0] || '';
+      if (!dept) return;
+      deptCounts[dept] = (deptCounts[dept] || 0) + 1;
     });
-    return courseCounts;
+    return deptCounts;
   };
 
-  const courseCounts = getCourseCounts();
-  const myCourseCount = mySession ? (courseCounts[mySession.courseCode] || 0) : 0;
+  const courseCounts = getDepartmentCounts();
+  const myCourseCount = mySession ? allSessions.filter(s => s.courseCode === mySession.courseCode).length : 0;
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center" style={{background:'linear-gradient(180deg, #fff6f7 0%, #ffffff 100%)'}}>
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading your session...</p>
@@ -564,54 +343,23 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
   const popularCourses = getPopularCourses();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Debug Panel */}
-      {showDebug && (
-        <div className="bg-yellow-50 border-2 border-yellow-300 p-4 rounded-lg m-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-bold">🐛 Debug Info</h3>
-            <button
-              onClick={() => setShowDebug(false)}
-              className="text-yellow-700 hover:text-yellow-900"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <pre className="text-xs bg-white p-2 rounded overflow-auto max-h-60">
-            {JSON.stringify(debugInfo, null, 2)}
-          </pre>
-          <button 
-            onClick={debugStorage}
-            className="mt-2 bg-yellow-500 text-white px-3 py-1 rounded text-sm hover:bg-yellow-600"
-          >
-            Refresh Debug
-          </button>
-        </div>
-      )}
-      
+    <div className="min-h-screen" style={{background:'linear-gradient(180deg, #fff6f7 0%, #ffffff 100%)'}}>
       {/* Top Bar */}
       <div className="bg-white border-b border-gray-200 px-4 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-xl font-bold text-gray-900">Study Session Matchmaker</h1>
+          <div className="flex items-center gap-3">
+            <img src="/dashboard.png" alt="myPeers" className="h-8" onError={(e)=>{ e.currentTarget.style.display='none'; }} />
             <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-semibold font-mono">
               {mySession.courseCode}
             </span>
           </div>
           <div className="flex items-center gap-4">
             <button
-              onClick={() => setShowDebug(!showDebug)}
-              className="px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition-all duration-200"
-              title="Toggle Debug Panel"
-            >
-              🐛 Debug
-            </button>
-            <button
               onClick={async () => {
                 await checkMessages(); // Refresh messages before opening
                 setShowInbox(true);
               }}
-              className="relative flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-all duration-200"
+              className="relative flex items-center gap-2 px-5 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-all duration-200 text-base font-medium"
             >
               <MessageSquare className="w-5 h-5" />
               {unreadMessages > 0 && (
@@ -623,10 +371,10 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
             </button>
             <div className="flex items-center gap-2">
               {user && (
-                <div className="text-sm text-gray-600 mr-2">
-                  <span className="font-semibold">{user.name}</span>
+                <div className="text-base text-gray-600 mr-2">
+                  <span className="font-semibold text-gray-800">{user.name}</span>
                   <span className="text-gray-400 mx-1">•</span>
-                  <span className="font-mono text-xs">{user.studentId}</span>
+                  <span className="font-mono text-sm">{user.studentId}</span>
                 </div>
               )}
               <button
@@ -653,67 +401,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           {/* Main Content */}
           <div className="lg:col-span-3 space-y-6">
-            {/* Online Users Section */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold text-gray-900">
-                  Online Users ({allSessions.length + (mySession ? 1 : 0)})
-                </h2>
-                <button
-                  onClick={fetchSessions}
-                  className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors"
-                >
-                  🔄 Refresh
-                </button>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {/* Show current user */}
-                {mySession && (
-                  <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                      <h3 className="font-semibold text-gray-900">{mySession.name}</h3>
-                      <span className="text-xs text-gray-500 font-mono">(You)</span>
-                    </div>
-                    {mySession.studentId && (
-                      <p className="text-xs font-mono text-gray-600 mb-1">{mySession.studentId}</p>
-                    )}
-                    <p className="text-sm font-mono text-blue-600 font-semibold">{mySession.courseCode}</p>
-                    {mySession.workingOn && (
-                      <p className="text-xs text-gray-600 mt-1">{mySession.workingOn}</p>
-                    )}
-                  </div>
-                )}
-                
-                {/* Show all other online users */}
-                {allSessions.map((session) => (
-                  <div key={session.id} className="bg-gray-50 border border-gray-200 rounded-lg p-4 hover:shadow-md transition-all">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className={`w-3 h-3 rounded-full ${
-                        session.status === 'active' ? 'bg-green-500' : 'bg-orange-500'
-                      }`}></div>
-                      <h3 className="font-semibold text-gray-900">{session.name}</h3>
-                    </div>
-                    {session.studentId && (
-                      <p className="text-xs font-mono text-gray-600 mb-1">{session.studentId}</p>
-                    )}
-                    <p className="text-sm font-mono text-blue-600 font-semibold">{session.courseCode}</p>
-                    {session.workingOn && (
-                      <p className="text-xs text-gray-600 mt-1">{session.workingOn}</p>
-                    )}
-                    {session.location && (
-                      <p className="text-xs text-gray-500 mt-1">📍 {session.location}</p>
-                    )}
-                  </div>
-                ))}
-                
-                {allSessions.length === 0 && !mySession && (
-                  <div className="col-span-full text-center py-8 text-gray-500">
-                    No users online
-                  </div>
-                )}
-              </div>
-            </div>
+            {/* Removed Online Users Section as requested */}
             {/* Your Session Card */}
             <div className="bg-white rounded-lg shadow-md p-6 border-2 border-blue-200">
               <div className="flex items-center justify-between mb-4">
@@ -868,7 +556,7 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   )}
                   {filter !== 'all' && filter !== 'myCourse' && (
                     <p className="text-sm text-gray-600 mt-1">
-                      {filteredSessions.length} {filteredSessions.length === 1 ? 'student' : 'students'} in {filter} courses
+                      {filteredSessions.length} {filteredSessions.length === 1 ? 'student' : 'students'} in {filter}
                     </p>
                   )}
                 </div>
@@ -877,15 +565,15 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   onChange={(e) => setFilter(e.target.value)}
                   className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                 >
-                  <option value="all">All Courses ({allSessions.length})</option>
+                  <option value="all">All Departments ({allSessions.length})</option>
                   <option value="myCourse">
                     My Course ({mySession?.courseCode}) {myCourseCount > 0 ? `- ${myCourseCount} students` : ''}
                   </option>
-                  <option value="COMP">COMP ({Object.keys(courseCounts).filter(c => c.startsWith('COMP')).reduce((sum, c) => sum + courseCounts[c], 0)})</option>
-                  <option value="MATH">MATH ({Object.keys(courseCounts).filter(c => c.startsWith('MATH')).reduce((sum, c) => sum + courseCounts[c], 0)})</option>
-                  <option value="ECON">ECON ({Object.keys(courseCounts).filter(c => c.startsWith('ECON')).reduce((sum, c) => sum + courseCounts[c], 0)})</option>
-                  <option value="PHYS">PHYS ({Object.keys(courseCounts).filter(c => c.startsWith('PHYS')).reduce((sum, c) => sum + courseCounts[c], 0)})</option>
-                  <option value="BIOL">BIOL ({Object.keys(courseCounts).filter(c => c.startsWith('BIOL')).reduce((sum, c) => sum + courseCounts[c], 0)})</option>
+                  {Object.keys(courseCounts).sort().map(dept => (
+                    <option key={dept} value={dept}>
+                      {dept} ({courseCounts[dept]})
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -896,14 +584,29 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {filteredSessions.map(session => (
-                    <SessionCard
-                      key={session.id}
-                      session={session}
-                      onConnect={handleConnect}
-                    />
-                  ))}
+                <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+                  <div className="divide-y">
+                    {filteredSessions.map((session, idx) => (
+                      <div key={session.id} className={`${idx % 2 === 0 ? 'bg-white' : 'bg-red-50'} flex items-center justify-between px-4 py-3 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg`}>
+                        <div className="flex items-center gap-4">
+                          <div className={`w-2 h-2 rounded-full ${session.status === 'active' ? 'bg-green-500' : 'bg-orange-500'}`}></div>
+                          <div>
+                            <div className="font-semibold text-gray-900">{session.name}</div>
+                            <div className="text-xs text-gray-500 font-mono">{session.studentId}</div>
+                          </div>
+                          <div className="font-mono font-semibold text-blue-600">{session.courseCode}</div>
+                          {session.workingOn && <div className="text-sm text-gray-600">• {session.workingOn}</div>}
+                          {session.location && <div className="text-xs text-gray-500">• 📍 {session.location}</div>}
+                        </div>
+                        <button
+                          onClick={() => handleConnect(session)}
+                          className="px-3 py-1 border rounded hover:bg-gray-50"
+                        >
+                          Connect
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -952,54 +655,124 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
         onClose={() => setShowDatabase(false)} 
       />
 
-      {/* Message Modal */}
+      {/* Message Modal - Chat thread */}
       {showMessageModal && selectedUser && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <h3 className="text-xl font-bold mb-4">
-              Send Message to {selectedUser.name}
-            </h3>
-            
-            <div className="mb-4 p-4 bg-gray-50 rounded">
-              <p className="text-sm text-gray-600">Course</p>
-              <p className="font-mono font-bold text-blue-600">{selectedUser.courseCode}</p>
-              
-              <p className="text-sm text-gray-600 mt-2">Working on</p>
-              <p>{selectedUser.workingOn || 'Not specified'}</p>
-              
-              {selectedUser.location && (
-                <>
-                  <p className="text-sm text-gray-600 mt-2">Location</p>
-                  <p>{selectedUser.location}</p>
-                </>
+          <div className="bg-white rounded-lg max-w-lg w-full p-6 flex flex-col h-[70vh]">
+            <div className="mb-3">
+              <h3 className="text-lg font-bold">Chat with {selectedUser.name}</h3>
+              <p className="text-xs text-gray-500 font-mono">{selectedUser.courseCode}</p>
+            </div>
+            <div className="flex-1 overflow-y-auto border rounded p-3 bg-gray-50">
+              {conversation.length === 0 ? (
+                <p className="text-sm text-gray-500">No messages yet. Say hi!</p>
+              ) : (
+                conversation.map((msg) => (
+                  <div key={msg.id} className={`mb-2 flex ${msg.from_user === mySession?.userId ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-xs px-3 py-2 rounded-lg ${msg.from_user === mySession?.userId ? 'bg-blue-600 text-white' : 'bg-white border'}`}>
+                      {msg.image_url ? (
+                        msg.image_url.toLowerCase().endsWith('.pdf') ? (
+                          <a href={msg.image_url} target="_blank" rel="noreferrer" className={`${msg.from_user === mySession?.userId ? 'text-white' : 'text-blue-700'} underline`}>
+                            {msg.text || 'Open PDF'}
+                          </a>
+                        ) : (
+                          <a href={msg.image_url} target="_blank" rel="noreferrer">
+                            <img src={msg.image_url} alt="attachment" className="rounded max-w-[220px] max-h-[220px] object-cover" />
+                          </a>
+                        )
+                      ) : (
+                        <div className="text-sm whitespace-pre-wrap">{msg.text}</div>
+                      )}
+                      <div className="flex items-center justify-between gap-2 mt-1">
+                        <div className="text-[10px] opacity-70">{new Date(msg.created_at).toLocaleTimeString()}</div>
+                        {msg.image_url && msg.from_user === mySession?.userId && (
+                          <button
+                            onClick={async () => {
+                              try {
+                                await deleteMessageFileSupabase(msg);
+                                // Optimistically hide the file from the current view
+                                setConversation(prev => prev.map(m => m.id === msg.id ? { ...m, image_url: null, text: (m.text || 'File') + ' (deleted)' } : m));
+                              } catch (e) {
+                                alert(e?.message || 'Failed to delete file');
+                              }
+                            }}
+                            className={`text-xs underline ${msg.from_user === mySession?.userId ? 'text-white' : 'text-red-600'}`}
+                            title="Delete file"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+            </div>
+                  </div>
+                ))
               )}
             </div>
-
-            <textarea
+            <div className="mt-3 flex flex-wrap gap-2 items-center justify-between">
+              <input
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="Hey! Want to study together?"
-              className="w-full border border-gray-300 rounded-lg p-3 mb-4 h-32 resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              autoFocus
+                placeholder="Type a message"
+                className="flex-1 min-w-[180px] border border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
-
-            <div className="flex gap-3">
               <button
                 onClick={sendMessage}
                 disabled={!message.trim()}
-                className="flex-1 bg-blue-600 text-white rounded-lg py-2 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
               >
-                Send Message
+                Send
               </button>
+              <label className="px-3 py-2 border rounded cursor-pointer hover:bg-gray-50">
+                Attach
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f && (f.type.startsWith('image/') || f.type === 'application/pdf')) {
+                      setImageFile(f);
+                    } else {
+                      alert('Only images or PDF files are allowed');
+                    }
+                  }}
+                />
+              </label>
+              {imageFile && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const toId = selectedUser.userId || selectedUser.user_id || selectedUser.id;
+                      if (imageFile.type === 'application/pdf') {
+                        await sendPdfMessageSupabase({ toUserId: toId, file: imageFile });
+                      } else {
+                        await sendImageMessageSupabase({ toUserId: toId, file: imageFile });
+                      }
+                      // Immediately refresh conversation so the new file appears without closing
+                      const latest = await listConversationSupabase(toId);
+                      setConversation(latest);
+                      setImageFile(null);
+                    } catch (e) {
+                      console.error('Image send failed', e);
+                      alert(e?.message || 'Failed to send file');
+                    }
+                  }}
+                  className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 whitespace-nowrap"
+                >
+                  Send File
+                </button>
+              )}
               <button
                 onClick={() => {
                   setShowMessageModal(false);
                   setSelectedUser(null);
                   setMessage('');
+                  setConversation([]);
+                  if (conversationUnsub) conversationUnsub();
                 }}
-                className="px-6 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                className="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 whitespace-nowrap"
               >
-                Cancel
+                Close
               </button>
             </div>
           </div>
@@ -1031,70 +804,52 @@ const Dashboard = ({ onLeave, onLogout, user }) => {
               </button>
             </div>
             
-            <div className="flex-1 overflow-y-auto space-y-4">
-              {inboxMessages.length === 0 ? (
+            <div className="flex-1 overflow-y-auto">
+              {(() => {
+                const me = mySession?.userId;
+                const bySender = new Map();
+                inboxMessages.forEach(m => {
+                  const otherId = m.from_user === me ? m.to_user : m.from_user;
+                  const otherName = m.from_user === me ? m.to_name : m.from_name;
+                  // Fallback to current sessions list if name not present
+                  const fallbackName = (allSessions.find(s => s.userId === otherId)?.name) || '';
+                  const nameToUse = otherName || fallbackName;
+                  if (!bySender.has(otherId)) bySender.set(otherId, { name: nameToUse, unread: 0 });
+                  if (!m.read && m.to_user === me) bySender.get(otherId).unread++;
+                });
+                const entries = Array.from(bySender.entries());
+                if (entries.length === 0) {
+                  return (
                 <div className="text-center py-12 text-gray-500">
                   <MessageSquare className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                   <p>No messages yet</p>
-                  <p className="text-sm mt-2">Connect with other students to start messaging!</p>
                 </div>
-              ) : (
-                inboxMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className={`p-4 rounded-lg border-2 transition-all ${
-                      msg.read
-                        ? 'bg-gray-50 border-gray-200'
-                        : 'bg-blue-50 border-blue-300 shadow-sm'
-                    }`}
-                    onClick={() => {
-                      if (!msg.read) {
-                        markMessageAsRead(msg.key);
-                      }
-                    }}
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <h4 className="font-semibold text-gray-900">{msg.fromName}</h4>
-                          {!msg.read && (
-                            <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
-                              New
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-gray-500 mt-1">
-                          {new Date(msg.timestamp).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-2">
-                      <p className="text-gray-700 whitespace-pre-wrap">{msg.text}</p>
-                    </div>
-                    {msg.fromName && (
-                      <div className="mt-2 pt-2 border-t border-gray-200">
+                  );
+                }
+                return (
+                  <div className="space-y-2">
+                    {entries.map(([otherId, info]) => (
                         <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            // Find the sender's session and open connect modal
-                            const senderSession = allSessions.find(s => s.id === msg.from);
-                            if (senderSession) {
-                              setSelectedUser(senderSession);
+                        key={otherId}
+                        onClick={() => {
+                          const otherSession = allSessions.find(s => s.userId === otherId);
+                          setSelectedUser(otherSession || { userId: otherId, name: info.name });
                               setShowMessageModal(true);
                               setShowInbox(false);
-                            } else {
-                              alert('Sender is no longer online');
-                            }
-                          }}
-                          className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-                        >
-                          Reply
+                        }}
+                        className="w-full flex items-center justify-between px-4 py-3 bg-white border rounded hover:bg-gray-50"
+                      >
+                        <span className="font-medium">{info.name || 'Student'}</span>
+                        {info.unread > 0 && (
+                          <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
+                            {info.unread}
+                          </span>
+                        )}
                         </button>
+                    ))}
                       </div>
-                    )}
-                  </div>
-                ))
-              )}
+                );
+              })()}
             </div>
           </div>
         </div>

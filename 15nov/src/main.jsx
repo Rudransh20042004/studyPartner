@@ -1,6 +1,5 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import './utils/storagePolyfill' // Initialize storage polyfill before anything else
 import { initCrossTabSync } from './utils/crossTabSync' // Initialize cross-tab sync
 import './index.css'
 import App from './App.jsx'

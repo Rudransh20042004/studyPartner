@@ -1,73 +1,80 @@
 import { useState, useEffect } from 'react';
 import { Database } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+import LoginPage from './LoginPage';
 
 const DatabasePage = () => {
   const [users, setUsers] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
+  const [user, setUser] = useState(null);
+
+  // auth listener
+  useEffect(() => {
+    const checkSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUser(session.user);
+      }
+    };
+
+    checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const refreshDatabase = async () => {
     setIsLoading(true);
     try {
-      // Get all registered users
-      const userKeys = await window.storage.list('user_registry:', true);
-      const userList = [];
-      
-      for (const key of userKeys.keys) {
-        try {
-          const data = await window.storage.get(key, true);
-          if (data && data.value) {
-            const userInfo = JSON.parse(data.value);
-            userList.push({
-              studentId: userInfo.studentId,
-              name: userInfo.name,
-              registeredAt: new Date(userInfo.registeredAt).toLocaleString(),
-              key: key
-            });
-          }
-        } catch (e) {
-          console.error('Error parsing user:', key, e);
-        }
-      }
+      // Fetch profiles (users)
+      const { data: profiles, error: pErr } = await supabase
+        .from('profiles')
+        .select('id, student_id, full_name, created_at')
+        .order('created_at', { ascending: true });
 
-      // Get all sessions
-      const sessionKeys = await window.storage.list('session:', true);
-      const sessionList = [];
+      if (pErr) throw pErr;
+
+      const userList = (profiles || []).map(row => ({
+        studentId: row.student_id,
+        name: row.full_name,
+        registeredAt: new Date(row.created_at).toLocaleString(),
+        id: row.id
+      }));
+
+      // Fetch sessions
+      const { data: sess, error: sErr } = await supabase
+        .from('sessions')
+        .select('id, name, student_id, course_code, working_on, location, status, last_active')
+        .order('last_active', { ascending: false });
+
+      if (sErr) throw sErr;
+
       const now = Date.now();
-      
-      for (const key of sessionKeys.keys) {
-        try {
-          const data = await window.storage.get(key, true);
-          if (data && data.value) {
-            const session = JSON.parse(data.value);
-            const age = Math.floor((now - session.lastActive) / 1000);
-            const isActive = (now - session.lastActive) < 300000;
-            
-            sessionList.push({
-              id: session.id,
-              name: session.name,
-              studentId: session.studentId,
-              courseCode: session.courseCode,
-              workingOn: session.workingOn,
-              location: session.location,
-              status: session.status,
-              lastActive: new Date(session.lastActive).toLocaleString(),
-              age: `${Math.floor(age / 60)}m ${age % 60}s`,
-              isActive: isActive,
-              key: key
-            });
-          }
-        } catch (e) {
-          console.error('Error parsing session:', key, e);
-        }
-      }
+      const sessionList = (sess || []).map(row => {
+        const lastActiveTs = row.last_active ? new Date(row.last_active).getTime() : 0;
+        const ageSec = Math.floor((now - lastActiveTs) / 1000);
+        const isActive = (now - lastActiveTs) < 300000; // 5 minutes
 
-      // Sort users by registration date
-      userList.sort((a, b) => new Date(a.registeredAt) - new Date(b.registeredAt));
-      
-      // Sort sessions by last active
-      sessionList.sort((a, b) => b.lastActive.localeCompare(a.lastActive));
+        return {
+          id: row.id,
+          name: row.name,
+          studentId: row.student_id,
+          courseCode: row.course_code,
+          workingOn: row.working_on,
+          location: row.location,
+          status: row.status,
+          lastActive: row.last_active ? new Date(row.last_active).toLocaleString() : '—',
+          age: `${Math.floor(ageSec/60)}m ${ageSec%60}s`,
+          isActive,
+        };
+      });
 
       setUsers(userList);
       setSessions(sessionList);
@@ -80,10 +87,17 @@ const DatabasePage = () => {
   };
 
   useEffect(() => {
-    refreshDatabase();
-    const interval = setInterval(refreshDatabase, 5000);
-    return () => clearInterval(interval);
-  }, []);
+    if (user) {
+      refreshDatabase();
+      const interval = setInterval(refreshDatabase, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [user]);
+
+  // If not signed in, show login page
+  if (!user) {
+    return <LoginPage onSuccess={() => refreshDatabase()} />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
@@ -105,6 +119,15 @@ const DatabasePage = () => {
             {lastRefresh && (
               <span className="text-sm text-gray-500">Last refresh: {lastRefresh}</span>
             )}
+            <button
+              onClick={async () => {
+                await supabase.auth.signOut();
+                setUser(null);
+              }}
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
+            >
+              Sign out
+            </button>
             <a
               href="/"
               className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors"
@@ -236,4 +259,3 @@ const DatabasePage = () => {
 };
 
 export default DatabasePage;
-

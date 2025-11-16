@@ -3,13 +3,18 @@ import Login from './components/Login';
 import Landing from './components/Landing';
 import Dashboard from './components/Dashboard';
 import DatabasePage from './pages/DatabasePage';
-import { createSession, getMySession, leaveSession, findSessionByStudentId } from './utils/storage';
+import LoginPage from './pages/LoginPage';
+import { supabase } from './lib/supabaseClient';
+import { createSession, getMySession, findSessionByStudentId, checkUserExists } from './utils/storage';
+import { createSessionSupabase, getMyActiveSessionSupabase, leaveSessionSupabase } from './utils/sessionsSupabase';
 import './App.css';
 
 function App() {
   const [view, setView] = useState('login');
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   
   // Check if we're on the database page
   useEffect(() => {
@@ -20,55 +25,70 @@ function App() {
     }
   }, []);
 
+  // Supabase auth: check if there's an authenticated user
   useEffect(() => {
-    // Check if user is already logged in
-    const checkAuth = async () => {
+    const initAuth = async () => {
       try {
-        if (window.storage) {
-          // Check for user info
-          const userName = await window.storage.get('user_name', false);
-          const userStudentId = await window.storage.get('user_student_id', false);
-          
-          if (userName?.value && userStudentId?.value) {
-            const userData = { name: userName.value, studentId: userStudentId.value };
-            setUser(userData);
-            
-            // Check if user has an active session by Student ID
-            const session = await findSessionByStudentId(userStudentId.value);
-            if (session) {
-              // Restore session - set my_session_id to this session
-              await window.storage.set('my_session_id', session.id, false);
-              console.log('✅ Restored active session for student:', userStudentId.value);
-              setView('dashboard');
-            } else {
-              // No active session, check if there's a stored session ID (legacy)
-              const mySession = await getMySession();
-              if (mySession && mySession.studentId === userStudentId.value) {
-                const now = Date.now();
-                if (now - mySession.lastActive < 300000) {
-                  setView('dashboard');
-                } else {
-                  await leaveSession();
-                  setView('landing');
-                }
-              } else {
-                setView('landing');
-              }
-            }
-          } else {
-            setView('login');
-          }
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          setAuthUser(session.user);
         }
       } catch (e) {
-        console.error('Error checking auth:', e);
-        setView('login');
+        console.error('Error initializing Supabase auth:', e);
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    // After Supabase auth, load profile and set local user state
+    const loadUserProfile = async () => {
+      try {
+        if (!authUser) {
+          setUser(null);
+          setIsLoading(false);
+          return;
+        }
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('student_id, full_name')
+          .eq('user_id', authUser.id)
+          .maybeSingle();
+        if (prof) {
+          setUser({ name: prof.full_name || null, studentId: prof.student_id || null });
+        } else {
+          setUser({ name: null, studentId: null });
+        }
+        // Decide initial view: if user has active session, go to dashboard; else landing
+        try {
+          const active = await getMyActiveSessionSupabase();
+          if (active) {
+            setView('dashboard');
+          } else {
+            setView('landing');
+          }
+        } catch {
+          setView('landing');
+        }
+      } catch (e) {
+        console.error('Error loading profile:', e);
       } finally {
         setIsLoading(false);
       }
     };
-
-    checkAuth();
-  }, []);
+    loadUserProfile();
+  }, [authUser]);
 
   const handleLogin = async (userData) => {
     setUser(userData);
@@ -89,9 +109,6 @@ function App() {
     try {
       const existingSession = await findSessionByStudentId(userData.studentId);
       if (existingSession) {
-        // Restore active session
-        await window.storage.set('my_session_id', existingSession.id, false);
-        console.log('✅ Restored active session on login');
         setView('dashboard');
       } else {
         // No active session, go to landing page
@@ -103,32 +120,44 @@ function App() {
     }
   };
 
-  const handleStartStudying = async (courseCode, workingOn, location) => {
-    if (!user || !user.studentId) {
-      alert('Please login first');
-      return;
+  const handleStartStudying = async (courseCode, workingOn, location, profile) => {
+    // Prefer explicit profile; otherwise fetch from Supabase
+    let effectiveStudentId = profile?.studentId || user?.studentId;
+    let effectiveName = profile?.name || user?.name;
+
+    if (!effectiveStudentId || !effectiveName) {
+      try {
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (authUser) {
+          const { data: prof } = await supabase
+            .from('profiles')
+            .select('student_id, full_name')
+            .eq('user_id', authUser.id)
+            .maybeSingle();
+          if (prof) {
+            effectiveStudentId = effectiveStudentId || prof.student_id;
+            effectiveName = effectiveName || prof.full_name;
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch profile from Supabase', e);
+      }
     }
-    
-    // Get user name from storage (might have been set on landing page)
-    let userName = user.name;
-    if (!userName && window.storage) {
-      const nameData = await window.storage.get('user_name', false);
-      userName = nameData?.value;
-    }
-    
-    if (!userName) {
-      alert('Please enter your name');
+
+    if (!effectiveStudentId || !effectiveName) {
+      alert('Please complete your profile (name and student ID)');
       return;
     }
     
     try {
-      await createSession(userName, user.studentId, courseCode, workingOn, location);
-      // Update user state with name
-      setUser({ ...user, name: userName });
+      // Use Supabase sessions (no localStorage)
+      await createSessionSupabase(effectiveName, effectiveStudentId, courseCode, workingOn, location);
+      // Update user state with profile info
+      setUser({ name: effectiveName, studentId: effectiveStudentId });
       setView('dashboard');
     } catch (e) {
       console.error('Error starting session:', e);
-      throw e;
+      alert(e?.message || 'Failed to start session. Please try again.');
     }
   };
 
@@ -138,11 +167,9 @@ function App() {
 
   const handleLogout = async () => {
     try {
-      await leaveSession();
-      if (window.storage) {
-        await window.storage.delete('user_name', false);
-        await window.storage.delete('user_student_id', false);
-      }
+      // Hard-delete any session for this user before logging out
+      await leaveSessionSupabase();
+      await supabase.auth.signOut();
       setUser(null);
       setView('login');
     } catch (e) {
@@ -166,12 +193,27 @@ function App() {
     return <DatabasePage />;
   }
 
+  // While Supabase auth state is loading, show a simple loading screen
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Checking authentication...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If not authenticated with Supabase, show the Supabase email/password login page
+  if (!authUser) {
+    return <LoginPage onSuccess={() => { /* auth listener will update authUser state */ }} />;
+  }
+
   return (
     <div className="App">
-      {view === 'login' ? (
-        <Login onLogin={handleLogin} />
-      ) : view === 'landing' ? (
-        <Landing onStartStudying={handleStartStudying} user={user} />
+      {view === 'landing' ? (
+        <Landing onStartStudying={handleStartStudying} user={user} onLogout={handleLogout} />
       ) : (
         <Dashboard onLeave={handleLeave} onLogout={handleLogout} user={user} />
       )}

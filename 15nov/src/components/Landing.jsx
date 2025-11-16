@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
-import { getAllSessions } from '../utils/storage';
 import { mcgillCourses } from '../data/courses';
+import { supabase } from '../lib/supabaseClient';
 
-const Landing = ({ onStartStudying, user }) => {
-  const [name, setName] = useState(user?.name || '');
+const Landing = ({ onStartStudying, user, onLogout }) => {
   const [courseCode, setCourseCode] = useState('');
   const [workingOn, setWorkingOn] = useState('');
   const [location, setLocation] = useState('');
@@ -11,15 +10,54 @@ const Landing = ({ onStartStudying, user }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [showCourseDropdown, setShowCourseDropdown] = useState(false);
   const [courseSearch, setCourseSearch] = useState('');
+  // Inline profile completion
+  const [profileName, setProfileName] = useState('');
+  const [profileStudentId, setProfileStudentId] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileComplete, setProfileComplete] = useState(false);
 
   useEffect(() => {
-    // Update live count every 5 seconds
+    // Load current profile to decide if we need inline completion
+    const loadProfile = async () => {
+      try {
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (!authUser) return;
+        const { data: prof } = await supabase
+          .from('profiles')
+          .select('student_id, full_name')
+          .eq('user_id', authUser.id)
+          .maybeSingle();
+        if (prof?.full_name && prof?.student_id) {
+          setProfileName(prof.full_name || '');
+          setProfileStudentId(prof.student_id || '');
+          setProfileComplete(true);
+        } else {
+          // Prefill name from metadata/email if available
+          const fallbackName =
+            authUser.user_metadata?.full_name ||
+            authUser.email?.split('@')?.[0]?.replace(/[._]/g, ' ') ||
+            '';
+          setProfileName(fallbackName);
+          setProfileComplete(false);
+        }
+      } catch {
+        // keep silent; user can still enter values
+      }
+    };
+    loadProfile();
+  }, []);
+
+  useEffect(() => {
+    // Update live count every 5 seconds (Supabase-based count)
     const updateCount = async () => {
       try {
-        if (window.storage) {
-          const sessions = await getAllSessions();
-          setLiveCount(sessions.length);
+        const { data, error } = await supabase
+          .from('sessions')
+          .select('id', { count: 'exact', head: true });
+        if (error) {
+          console.error('Count error:', error);
         }
+        setLiveCount((data && data.length) || 0);
       } catch (e) {
         console.error('Error updating live count:', e);
       }
@@ -34,36 +72,47 @@ const Landing = ({ onStartStudying, user }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    if (!name.trim()) {
-      alert('Please enter your name');
-      return;
-    }
-    
     if (!courseCode.trim()) {
       alert('Please enter a course code');
       return;
     }
 
-    if (!user || !user.studentId) {
-      alert('Please login first');
-      return;
-    }
-
     setIsLoading(true);
     try {
-      if (!window.storage) {
-        alert('Storage API not available. Please check your browser support.');
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) {
+        alert('Please login first');
         setIsLoading(false);
         return;
       }
-
-      // Save user name if it's a new user
-      if (!user.name) {
-        await window.storage.set('user_name', name.trim(), false);
-        console.log('✅ Saved user name:', name.trim());
+      // Ensure profile exists and is complete; if not, try saving it inline
+      if (!profileComplete || !profileName || !profileStudentId) {
+        if (!profileName.trim() || profileStudentId.trim().length !== 9) {
+          setIsLoading(false);
+          alert('Please complete your profile (full name and 9‑digit Student ID).');
+          return;
+        }
+        try {
+          await supabase.from('profiles').upsert({
+            user_id: authUser.id,
+            full_name: profileName.trim(),
+            student_id: profileStudentId.trim(),
+          });
+          setProfileComplete(true);
+        } catch (err) {
+          console.error('Profile save failed', err);
+          setIsLoading(false);
+          alert('Could not save profile. Please try again.');
+          return;
+        }
       }
 
-      await onStartStudying(courseCode.trim().toUpperCase(), workingOn.trim() || 'Studying', location.trim());
+      // Continue to start studying with collected info
+      await onStartStudying(
+        courseCode.trim().toUpperCase(),
+        workingOn.trim() || 'Studying',
+        location.trim()
+      );
     } catch (e) {
       console.error('Error starting session:', e);
       alert('Failed to start session. Please try again.');
@@ -84,47 +133,81 @@ const Landing = ({ onStartStudying, user }) => {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4 py-12">
-      <div className="max-w-md w-full space-y-8">
+    <div className="min-h-screen flex items-center justify-center px-4 py-12" style={{background:'linear-gradient(180deg, #fff6f7 0%, #ffffff 100%)'}}>
+      <div className="max-w-2xl w-full space-y-8">
         <div className="text-center">
           <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
-            Find McGill Students Studying Your Course Right Now
+            Find peers in your courses instantly.
           </h1>
           <p className="text-lg text-gray-600 mb-8">
             Connect with classmates studying the same material, in real-time
           </p>
+          {onLogout && (
+            <button
+              onClick={onLogout}
+              className="mt-2 inline-flex items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 border border-red-200 rounded-lg transition-colors"
+              title="Sign out"
+            >
+              Sign out
+            </button>
+          )}
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm p-6 space-y-6">
-          {user && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-              <p className="text-sm text-gray-600">Student ID</p>
-              <p className="font-mono font-semibold text-gray-900">{user.studentId}</p>
-              {user.name && (
-                <>
-                  <p className="text-sm text-gray-600 mt-2">Name</p>
-                  <p className="font-semibold text-gray-900">{user.name}</p>
-                </>
-              )}
+        {!profileComplete && (
+          <div className="bg-white rounded-lg shadow-sm p-6 space-y-4 border border-red-200">
+            <h3 className="font-semibold text-gray-900">Complete your profile</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                <input
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Your full name"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Student ID (9 digits)</label>
+                <input
+                  value={profileStudentId}
+                  onChange={(e) => setProfileStudentId(e.target.value.replace(/\D/g, '').slice(0, 9))}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"
+                  placeholder="260123456"
+                  maxLength={9}
+                />
+              </div>
             </div>
-          )}
-          
-          {!user?.name && (
-            <div>
-              <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
-                Your Name
-              </label>
-              <input
-                id="name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Enter your name"
-                className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                required
-              />
-            </div>
-          )}
+            <button
+              type="button"
+              onClick={async () => {
+                setProfileSaving(true);
+                try {
+                  const { data: { user: authUser } } = await supabase.auth.getUser();
+                  if (!authUser) throw new Error('Please login first');
+                  if (!profileName.trim() || profileStudentId.trim().length !== 9) {
+                    throw new Error('Enter full name and a 9‑digit Student ID');
+                  }
+                  await supabase.from('profiles').upsert({
+                    user_id: authUser.id,
+                    full_name: profileName.trim(),
+                    student_id: profileStudentId.trim(),
+                  });
+                  setProfileComplete(true);
+                } catch (err) {
+                  alert(err?.message || 'Failed to save profile');
+                } finally {
+                  setProfileSaving(false);
+                }
+              }}
+              disabled={profileSaving}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {profileSaving ? 'Saving...' : 'Save profile'}
+            </button>
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm p-8 space-y-6">
           
           <div>
             <label htmlFor="courseCode" className="block text-sm font-medium text-gray-700 mb-2">
@@ -229,13 +312,7 @@ const Landing = ({ onStartStudying, user }) => {
           </p>
         </div>
 
-        {!window.storage && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-center">
-            <p className="text-yellow-800 text-sm">
-              ⚠️ Storage API not available. This app requires browser storage support.
-            </p>
-          </div>
-        )}
+        
       </div>
     </div>
   );

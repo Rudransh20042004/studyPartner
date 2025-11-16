@@ -48,10 +48,20 @@ const Login = ({ onLogin }) => {
         // User exists - get their name from registry or session
         const userName = userCheck.name;
         
-        // Store user info in personal storage
+        // Store user info in BOTH personal and shared storage for cross-device sync
         if (window.storage) {
+          // Personal storage (for this device)
           await window.storage.set('user_name', userName, false);
           await window.storage.set('user_student_id', studentId.trim(), false);
+          
+          // Shared storage (for cross-device sync - stored with timestamp)
+          const authInfo = {
+            studentId: studentId.trim(),
+            name: userName,
+            lastLogin: Date.now()
+          };
+          await window.storage.set(`auth:${studentId.trim()}`, JSON.stringify(authInfo), true);
+          
           console.log('✅ Existing user logged in:', userName, studentId.trim());
         }
         
@@ -67,7 +77,16 @@ const Login = ({ onLogin }) => {
       } else {
         // New user - store student ID only, name will be collected on landing page
         if (window.storage) {
+          // Store in personal storage
           await window.storage.set('user_student_id', studentId.trim(), false);
+          
+          // Store in shared storage for cross-device sync (with minimal info)
+          const authInfo = {
+            studentId: studentId.trim(),
+            lastLogin: Date.now()
+          };
+          await window.storage.set(`auth:${studentId.trim()}`, JSON.stringify(authInfo), true);
+          
           console.log('✅ New user - Student ID saved:', studentId.trim());
         }
         
